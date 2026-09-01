@@ -8,6 +8,7 @@ use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Models\Tenant\Member;
 use App\Models\Tenant\PaymentInfo;
+use App\Services\PaymentDocumentService;
 use App\Services\PaymentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -15,7 +16,10 @@ use Illuminate\Support\Facades\DB;
 
 class PaymentController extends Controller
 {
-    public function __construct(private readonly PaymentService $payments) {}
+    public function __construct(
+        private readonly PaymentService $payments,
+        private readonly PaymentDocumentService $documents,
+    ) {}
 
     public function index(Request $request): JsonResponse
     {
@@ -74,6 +78,13 @@ class PaymentController extends Controller
             'fee_assign_ids.*' => ['required', 'integer'],
             'payment_type' => ['sometimes', 'in:manual,online'],
             'ledger_id' => ['sometimes', 'nullable', 'integer'],
+
+            // The member's proof of payment - a bank slip, usually photographed
+            // on the phone. With no gateway integrated this is how money
+            // actually reaches the association, so it is a first-class part of
+            // creating a payment rather than an afterthought.
+            'documents' => ['sometimes', 'array', 'max:'.PaymentDocumentService::MAX_PER_PAYMENT],
+            'documents.*' => ['file'],
         ]);
 
         $key = trim((string) $request->header('Idempotency-Key'));
@@ -118,6 +129,18 @@ class PaymentController extends Controller
             throw $this->translate($e);
         }
 
+        // Attached after creation, inside the same request. A document that
+        // fails validation must not leave a payment behind, so this runs before
+        // the idempotency key is recorded - a rejected upload can be retried
+        // with the same key and the same body.
+        if ($request->hasFile('documents')) {
+            try {
+                $this->documents->attach($payment, $request->file('documents'));
+            } catch (\DomainException $e) {
+                throw new ApiException('DOCUMENT_REJECTED', $e->getMessage(), 422);
+            }
+        }
+
         DB::table('idempotency_keys')->insert([
             'key' => $key,
             'member_id' => $member->id,
@@ -128,7 +151,7 @@ class PaymentController extends Controller
             'updated_at' => now(),
         ]);
 
-        return response()->json(['data' => $this->shape($payment, withItems: true)], 201);
+        return response()->json(['data' => $this->shape($payment->fresh('items'), withItems: true)], 201);
     }
 
     // ---- internals -----------------------------------------------------
@@ -172,6 +195,8 @@ class PaymentController extends Controller
             'payment_date' => $payment->payment_date?->toDateString(),
             'expires_at' => $payment->expires_at?->toIso8601String(),
         ];
+
+        $data['documents'] = $this->documents->list($payment);
 
         if ($withItems) {
             $data['items'] = $payment->items->map(fn ($item) => [

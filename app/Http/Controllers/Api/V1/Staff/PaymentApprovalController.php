@@ -49,6 +49,12 @@ class PaymentApprovalController extends Controller
                 'total_amount' => (string) $p->total_amount,
 
                 'instalment_count' => $p->items->count(),
+
+                // How many slips the member attached, so an approver can see at
+                // a glance whether there is anything to approve AGAINST. With no
+                // gateway, a manual payment with no document is a claim, not
+                // evidence.
+                'document_count' => count($p->documents ?? []),
                 'created_at' => $p->created_at?->toIso8601String(),
                 'expires_at' => $p->expires_at?->toIso8601String(),
             ]),

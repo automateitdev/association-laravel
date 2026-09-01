@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\DuesController;
 use App\Http\Controllers\Api\V1\GatewayController;
 use App\Http\Controllers\Api\V1\PaymentController;
+use App\Http\Controllers\Api\V1\PaymentDocumentController;
 use App\Http\Controllers\Api\V1\Staff\FeeController;
 use App\Http\Controllers\Api\V1\Staff\MemberController;
 use App\Http\Controllers\Api\V1\Staff\PaymentApprovalController;
@@ -84,6 +85,26 @@ Route::prefix('v1')->group(function () {
 
         Route::post('/payments', [PaymentController::class, 'store'])
             ->middleware('ability:member.payments.create');
+
+        /*
+         * Proof-of-payment documents.
+         *
+         * With no gateway integrated, a member pays at a bank and uploads the
+         * slip; staff approve against it. These files are evidence an approval
+         * decision rests on, so they are never served by URL - the download
+         * route streams them after an ownership or permission check
+         * (NFR-SEC-4).
+         *
+         * Shared between members and staff: a member reaches their own
+         * payment's documents, staff reach any if they may view payments. The
+         * controller makes that decision in one place.
+         */
+        Route::get('/payments/{payment}/documents', [PaymentDocumentController::class, 'index'])
+            ->middleware('abilities:member.payments.view,payments.view');
+        Route::post('/payments/{payment}/documents', [PaymentDocumentController::class, 'store'])
+            ->middleware('abilities:member.payments.create,payments.view');
+        Route::get('/payments/{payment}/documents/{index}', [PaymentDocumentController::class, 'show'])
+            ->middleware('abilities:member.payments.view,payments.view');
 
         // Two calls, not one: the payment row exists before the member is sent
         // anywhere, so a dropped round trip is reconcilable (FR-PAY-7).

@@ -6,7 +6,11 @@ namespace App\Console\Commands;
 
 use App\Models\Tenant;
 use App\Models\TenantProvisioningRun;
+use App\Models\User;
+use App\Services\TenantSeedService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Throwable;
 
@@ -28,6 +32,8 @@ class TenantProvision extends Command
         {--name= : Display name (defaults to the slug)}
         {--legal-name= : Registered legal name}
         {--domain= : Hostname, defaults to <slug>.<central domain>}
+        {--admin-name=Administrator : Name of the first superadmin}
+        {--admin-email= : Email of the first superadmin; omit to skip creating one}
         {--locale=en}
         {--timezone=Asia/Dhaka}
         {--currency=BDT}';
@@ -85,9 +91,13 @@ class TenantProvision extends Command
             $tenant->domains()->create(['domain' => $domain]);
             $this->line("  domain .................. {$domain}");
 
-            // TODO(P1): seed the default chart of accounts, roles and permissions,
-            // and create the first superadmin with an invitation token. Blocked on
-            // the tenant domain migrations landing.
+            $setupToken = $tenant->run(function () {
+                app(TenantSeedService::class)->seedAll();
+
+                return $this->createFirstSuperadmin();
+            });
+
+            $this->line('  settings, chart of accounts, roles .. seeded');
 
             $tenant->update([
                 'status' => Tenant::STATUS_ACTIVE,
@@ -101,6 +111,13 @@ class TenantProvision extends Command
             $this->line("  database: {$tenant->database()->getName()}");
             $this->line("  db user:  {$tenant->database()->getUsername()}");
             $this->line("  domain:   {$domain}");
+
+            if ($setupToken) {
+                $this->newLine();
+                $this->line("  superadmin: {$this->option('admin-email')}");
+                $this->line("  setup token: {$setupToken}");
+                $this->comment('  The token is shown once. It sets the first password; it is not a password.');
+            }
 
             return self::SUCCESS;
         } catch (Throwable $e) {
@@ -124,6 +141,43 @@ class TenantProvision extends Command
 
             return self::FAILURE;
         }
+    }
+
+    /**
+     * Create the association's first superadmin.
+     *
+     * The account is created with an unusable random password and a one-time
+     * setup token. Nobody - not us, not the operator running this command - ever
+     * knows a password the association's own administrator did not choose.
+     *
+     * @return string|null the setup token, shown once
+     */
+    private function createFirstSuperadmin(): ?string
+    {
+        $email = $this->option('admin-email');
+
+        if (! $email) {
+            return null;
+        }
+
+        $user = User::create([
+            'name' => $this->option('admin-name') ?: 'Administrator',
+            'email' => $email,
+
+            // Random and discarded. The token below is the only way in.
+            'password' => Str::password(40),
+        ]);
+
+        $user->assignRole('superadmin');
+
+        $token = Str::random(64);
+
+        DB::table('password_reset_tokens')->updateOrInsert(
+            ['email' => $email],
+            ['token' => Hash::make($token), 'created_at' => now()]
+        );
+
+        return $token;
     }
 
     /**

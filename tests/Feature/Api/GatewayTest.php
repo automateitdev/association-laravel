@@ -182,7 +182,7 @@ class GatewayTest extends TenantTestCase
         $this->inTenant(function () use ($payment) {
             $record = PaymentInfo::find($payment['id']);
 
-            $this->assertSame('1200.00', $record->spg_pay_amount, 'Recorded for reconciliation.');
+            $this->assertSame('1200.00', $record->gateway_amount, 'Recorded for reconciliation.');
             $this->assertSame('1000.00', $record->payable_amount, 'Instalments only, still.');
             $this->assertSame('200.00', $record->fine_amount);
         });
@@ -282,7 +282,7 @@ class GatewayTest extends TenantTestCase
     // ---- the R-5 fallback -------------------------------------------------
 
     /**
-     * If shurjoPay cannot deliver server-to-server callbacks for this merchant
+     * If the payment gateway cannot deliver server-to-server callbacks for this merchant
      * account (open risk R-5), reconciliation becomes the PRIMARY completion
      * path rather than a safety net. Proving it works now means that answer
      * changes a trigger, not a design.

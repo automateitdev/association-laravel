@@ -4,7 +4,6 @@ namespace App\Providers;
 
 use App\Contracts\PaymentGateway;
 use App\Services\Gateways\FakePaymentGateway;
-use App\Services\Gateways\ShurjoPayGateway;
 use Illuminate\Database\Events\ConnectionEstablished;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
@@ -17,24 +16,22 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         /*
-         * Which gateway implementation is live.
+         * The payment gateway.
          *
-         * FakePaymentGateway is the default everywhere except production,
-         * because the whole payment lifecycle - session, callback,
-         * verification, ledger, shares - must be exercisable without a live
-         * merchant account, and because open risk R-5 (does this merchant
-         * account support server-to-server callbacks at all?) is still
-         * unanswered. ShurjoPayGateway has never been run against a real
-         * account; see the warning in that class.
+         * There is currently NO live gateway integration, by decision: the
+         * shurjoPay adapter was removed rather than carried as untested code
+         * that had never run against a real merchant account.
+         *
+         * FakePaymentGateway is therefore the only implementation. It is not a
+         * stopgap in the code's eyes - the whole payment lifecycle (session,
+         * callback, verification, ledger posting, share minting) is exercised
+         * against it, so whichever provider is chosen later plugs in behind the
+         * PaymentGateway interface without any of that design moving.
+         *
+         * Until then, MANUAL payments are the only route to actually collecting
+         * money, and members cannot self-serve an online payment.
          */
-        $this->app->bind(PaymentGateway::class, function () {
-            return config('services.gateway.driver') === 'spg'
-                ? new ShurjoPayGateway
-                // Resolved from the container, not constructed fresh, so a test
-                // that configures the fake is configuring the same instance the
-                // service will use.
-                : $this->app->make(FakePaymentGateway::class);
-        });
+        $this->app->bind(PaymentGateway::class, fn () => $this->app->make(FakePaymentGateway::class));
 
         // Singleton so tests can configure the fake and have the service see it.
         $this->app->singleton(FakePaymentGateway::class);

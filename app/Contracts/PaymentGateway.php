@@ -12,7 +12,7 @@ use App\Support\Gateway\GatewayVerification;
  * A payment gateway, as this platform needs to see one.
  *
  * Deliberately small. The whole point of the interface is that the completion
- * design in ADR-0007 does not depend on shurjoPay specifically - and, more
+ * design in ADR-0007 does not depend on the payment gateway specifically - and, more
  * urgently, does not depend on the ANSWER to open risk R-5 (whether this
  * merchant account supports server-to-server webhooks).
  *

@@ -26,7 +26,7 @@ use Illuminate\Support\Facades\DB;
  *     fine_amount    = SUM(item.fine_amount)
  *     total_amount   = payable_amount + fine_amount
  *
- * The gateway's own figure goes to `spg_pay_amount` and is never allowed near
+ * The gateway's own figure goes to `gateway_amount` and is never allowed near
  * `payable_amount` (defect D-1).
  */
 class PaymentService
@@ -145,7 +145,7 @@ class PaymentService
 
                 // What the gateway said it took. Recorded for reconciliation and
                 // deliberately NOT written to payable_amount (defect D-1).
-                'spg_pay_amount' => $gatewayAmount ?? $payment->spg_pay_amount,
+                'gateway_amount' => $gatewayAmount ?? $payment->gateway_amount,
             ]);
 
             // Drives the generated column that enforces I-1: at most one

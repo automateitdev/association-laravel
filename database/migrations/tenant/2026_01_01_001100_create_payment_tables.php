@@ -17,7 +17,7 @@ use Illuminate\Support\Facades\Schema;
  *
  * The legacy online payment path writes the gateway's total - instalments PLUS
  * fine - into payable_amount (defect D-1), and every "savings" figure on every
- * report reads that column. Keeping the gateway's own figure in spg_pay_amount
+ * report reads that column. Keeping the gateway's own figure in gateway_amount
  * is what stops the overstatement.
  */
 return new class extends Migration
@@ -45,7 +45,7 @@ return new class extends Migration
 
             // What the gateway said it took. Recorded for reconciliation and
             // never, under any circumstance, copied into payable_amount.
-            $table->decimal('spg_pay_amount', 15, 2)->nullable();
+            $table->decimal('gateway_amount', 15, 2)->nullable();
 
             $table->enum('status', ['pending', 'completed', 'suspended', 'expired'])
                 ->default('pending')
@@ -157,7 +157,7 @@ return new class extends Migration
         // a payment and the gateway disagree.
         Schema::create('gateway_events', function (Blueprint $table) {
             $table->id();
-            $table->string('provider', 50)->default('spg');
+            $table->string('provider', 50)->default('gateway');
             $table->string('event_type', 50)->nullable();
             $table->string('reference')->nullable()->index();
             $table->json('payload');

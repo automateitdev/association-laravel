@@ -10,7 +10,7 @@ use Illuminate\Database\Eloquent\Model;
  * One association's merchant credentials.
  *
  * PER TENANT, and encrypted at rest (NFR-SEC-2). Each association holds its own
- * shurjoPay merchant account; the platform stores the credentials but does not
+ * the payment gateway merchant account; the platform stores the credentials but does not
  * resell the service (A-1).
  *
  * The legacy system has live credentials as literals in PaymentController and

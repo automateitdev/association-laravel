@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\Schema;
  * Per-association integration credentials (FR-PAY-11, FR-SMS-6).
  *
  * These live in the TENANT database, encrypted, because each association holds
- * its own shurjoPay merchant account and its own prepaid SMS balance (A-1). The
+ * its own merchant account and its own prepaid SMS balance (A-1). The
  * platform stores the credentials; it does not resell the service.
  *
  * This is also the direct fix for defect D-10: the legacy system has live
@@ -28,7 +28,7 @@ return new class extends Migration
         Schema::create('gateway_credentials', function (Blueprint $table) {
             $table->id();
 
-            $table->string('provider', 50)->default('spg');
+            $table->string('provider', 50)->default('gateway');
 
             // Encrypted JSON: username, password, store id, base url.
             $table->text('credentials');

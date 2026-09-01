@@ -36,13 +36,16 @@ return [
     ],
 
     /*
-     * Payment gateway driver. Defaults to 'fake' - the real implementation is
-     * opt-in, because it has never been run against a live merchant account
-     * and open risk R-5 is unresolved.
+     * Payment gateway.
      *
-     * Merchant CREDENTIALS are not here. They live per association in the
-     * tenant database, encrypted, because each association holds its own
-     * merchant account (A-1).
+     * There is no live gateway integration. The shurjoPay adapter was removed
+     * rather than carried as untested code, so FakePaymentGateway is the only
+     * implementation and manual payment is the only real collection route.
+     *
+     * When a provider is chosen, add its adapter behind the PaymentGateway
+     * interface and switch on this key. Merchant CREDENTIALS never belong here:
+     * they live per association in the tenant database, encrypted, because each
+     * association holds its own merchant account (A-1).
      */
     'gateway' => [
         'driver' => env('PAYMENT_GATEWAY', 'fake'),

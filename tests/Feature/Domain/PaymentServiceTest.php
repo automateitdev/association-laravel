@@ -87,7 +87,7 @@ class PaymentServiceTest extends TenantTestCase
             // The gateway reports the full 1200.00 it collected.
             $completed = $service->complete($payment, gatewayAmount: '1200.00');
 
-            $this->assertSame('1200.00', $completed->spg_pay_amount, 'Recorded for reconciliation.');
+            $this->assertSame('1200.00', $completed->gateway_amount, 'Recorded for reconciliation.');
             $this->assertSame('1000.00', $completed->payable_amount, 'Still instalments only.');
             $this->assertSame('200.00', $completed->fine_amount);
         });

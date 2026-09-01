@@ -8,7 +8,7 @@ namespace App\Support\Gateway;
  * What the gateway says happened to a payment.
  *
  * `amount` is what the gateway collected. It is recorded on the payment as
- * `spg_pay_amount` for reconciliation and NEVER written to `payable_amount` -
+ * `gateway_amount` for reconciliation and NEVER written to `payable_amount` -
  * that single assignment is defect D-1, and it is why every "savings" figure in
  * the legacy reports is overstated by the fines collected alongside.
  */

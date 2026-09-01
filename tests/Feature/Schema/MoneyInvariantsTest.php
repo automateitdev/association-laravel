@@ -196,7 +196,7 @@ class MoneyInvariantsTest extends TestCase
             "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE
              FROM information_schema.COLUMNS
              WHERE TABLE_SCHEMA = ?
-               AND COLUMN_NAME IN ('amount','fine_amount','payable_amount','total_amount','debit','credit','spg_pay_amount')",
+               AND COLUMN_NAME IN ('amount','fine_amount','payable_amount','total_amount','debit','credit','gateway_amount')",
             ['tenant'.self::SLUG]
         );
 

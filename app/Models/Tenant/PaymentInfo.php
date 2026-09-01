@@ -19,7 +19,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  *
  * The legacy online path writes the gateway's total (instalments PLUS fine) into
  * payable_amount, and every "savings" figure on every report reads that column
- * (defect D-1). The gateway's own figure belongs in `spg_pay_amount`.
+ * (defect D-1). The gateway's own figure belongs in `gateway_amount`.
  */
 class PaymentInfo extends Model
 {
@@ -33,7 +33,7 @@ class PaymentInfo extends Model
 
     protected $fillable = [
         'invoice_no', 'member_id', 'ledger_id',
-        'payable_amount', 'fine_amount', 'total_amount', 'spg_pay_amount',
+        'payable_amount', 'fine_amount', 'total_amount', 'gateway_amount',
         'status', 'payment_type', 'gateway_reference', 'expires_at',
         'payment_date', 'reason', 'documents',
         'created_by', 'decided_by', 'decided_at',
@@ -45,7 +45,7 @@ class PaymentInfo extends Model
             'payable_amount' => 'decimal:2',
             'fine_amount' => 'decimal:2',
             'total_amount' => 'decimal:2',
-            'spg_pay_amount' => 'decimal:2',
+            'gateway_amount' => 'decimal:2',
             'documents' => 'array',
             'payment_date' => 'date',
             'expires_at' => 'datetime',

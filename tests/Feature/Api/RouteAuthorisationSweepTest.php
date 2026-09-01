@@ -47,6 +47,25 @@ class RouteAuthorisationSweepTest extends TestCase
         // The endpoint that establishes identity. Throttled per identifier and
         // per IP; refuses inactive and suspended members with distinct codes.
         'POST api/v1/auth/login',
+
+        // The gateway's server-to-server callback. The gateway has no session
+        // with us and cannot hold a token, so authenticity comes from an HMAC
+        // signature checked in GatewayService BEFORE anything is acted on, and
+        // the association is identified by the {tenant} segment of the URL we
+        // handed the gateway when the session was created.
+        //
+        // Critically, a valid signature is not treated as a statement of fact:
+        // the callback only tells us to LOOK, and we then ask the gateway
+        // directly what happened. A forged callback therefore achieves nothing
+        // even if the signature check were bypassed entirely.
+        //
+        // The legacy equivalents of this route accept anything at all (D-16).
+        'POST api/v1/webhooks/{tenant}/gateway',
+
+        // Where the gateway sends the member's BROWSER back to. Does nothing
+        // but redirect into the app - the member's return is not evidence of
+        // payment, and completion happens on the callback above.
+        'GET api/v1/webhooks/{tenant}/return/{payment}',
     ];
 
     /**

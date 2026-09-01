@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\DuesController;
+use App\Http\Controllers\Api\V1\GatewayController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\Staff\FeeController;
 use App\Http\Controllers\Api\V1\Staff\MemberController;
@@ -37,6 +38,23 @@ Route::prefix('v1')->group(function () {
     Route::get('/health', fn () => response()->json(['data' => ['status' => 'ok']]));
     Route::get('/tenants/lookup', TenantLookupController::class);
 
+    /*
+     * ---- gateway callbacks -------------------------------------------
+     *
+     * Not called by the app. The gateway has no session with us and sends no
+     * X-Tenant header, so the association travels in the URL we handed it when
+     * the session was created; authenticity comes from the signature, checked
+     * before anything is acted on.
+     *
+     * Deliberately outside `auth:sanctum` - and allowlisted in
+     * RouteAuthorisationSweepTest with that reasoning written down.
+     */
+    Route::post('/webhooks/{tenant}/gateway', [GatewayController::class, 'webhook'])
+        ->name('api.gateway.webhook');
+
+    Route::get('/webhooks/{tenant}/return/{payment}', [GatewayController::class, 'returnUrl'])
+        ->name('api.gateway.return');
+
     // ---- identity ------------------------------------------------------
 
     Route::post('/auth/login', [AuthController::class, 'login']);
@@ -65,6 +83,11 @@ Route::prefix('v1')->group(function () {
             ->middleware('ability:member.payments.view');
 
         Route::post('/payments', [PaymentController::class, 'store'])
+            ->middleware('ability:member.payments.create');
+
+        // Two calls, not one: the payment row exists before the member is sent
+        // anywhere, so a dropped round trip is reconcilable (FR-PAY-7).
+        Route::post('/payments/{payment}/gateway-session', [GatewayController::class, 'startSession'])
             ->middleware('ability:member.payments.create');
 
         // ---- staff surface ---------------------------------------------

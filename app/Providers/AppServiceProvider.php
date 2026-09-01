@@ -2,6 +2,9 @@
 
 namespace App\Providers;
 
+use App\Contracts\PaymentGateway;
+use App\Services\Gateways\FakePaymentGateway;
+use App\Services\Gateways\ShurjoPayGateway;
 use Illuminate\Database\Events\ConnectionEstablished;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
@@ -13,7 +16,28 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        /*
+         * Which gateway implementation is live.
+         *
+         * FakePaymentGateway is the default everywhere except production,
+         * because the whole payment lifecycle - session, callback,
+         * verification, ledger, shares - must be exercisable without a live
+         * merchant account, and because open risk R-5 (does this merchant
+         * account support server-to-server callbacks at all?) is still
+         * unanswered. ShurjoPayGateway has never been run against a real
+         * account; see the warning in that class.
+         */
+        $this->app->bind(PaymentGateway::class, function () {
+            return config('services.gateway.driver') === 'spg'
+                ? new ShurjoPayGateway
+                // Resolved from the container, not constructed fresh, so a test
+                // that configures the fake is configuring the same instance the
+                // service will use.
+                : $this->app->make(FakePaymentGateway::class);
+        });
+
+        // Singleton so tests can configure the fake and have the service see it.
+        $this->app->singleton(FakePaymentGateway::class);
     }
 
     /**

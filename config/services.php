@@ -35,4 +35,17 @@ return [
         ],
     ],
 
+    /*
+     * Payment gateway driver. Defaults to 'fake' - the real implementation is
+     * opt-in, because it has never been run against a live merchant account
+     * and open risk R-5 is unresolved.
+     *
+     * Merchant CREDENTIALS are not here. They live per association in the
+     * tenant database, encrypted, because each association holds its own
+     * merchant account (A-1).
+     */
+    'gateway' => [
+        'driver' => env('PAYMENT_GATEWAY', 'fake'),
+    ],
+
 ];

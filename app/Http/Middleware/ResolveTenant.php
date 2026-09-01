@@ -40,7 +40,9 @@ class ResolveTenant
             return $next($request);
         }
 
-        $tenant = $this->fromHeader($request) ?? $this->fromHost($request);
+        $tenant = $this->fromRoute($request)
+            ?? $this->fromHeader($request)
+            ?? $this->fromHost($request);
 
         if (! $tenant) {
             throw ApiException::tenantNotResolved();
@@ -60,6 +62,25 @@ class ResolveTenant
         \Log::withContext(['tenant' => $tenant->getKey()]);
 
         return $next($request);
+    }
+
+    /**
+     * A `{tenant}` segment in the route, used by gateway callbacks.
+     *
+     * The gateway is not our client: it sends no X-Tenant header and reaches us
+     * on whatever host we registered with it, so neither of the other two
+     * mechanisms can work. The association therefore travels in the callback URL
+     * we handed the gateway when the session was created.
+     *
+     * This does not weaken anything - the URL identifies WHICH association, the
+     * signature proves the callback is genuine, and the two are checked
+     * independently.
+     */
+    private function fromRoute(Request $request): ?Tenant
+    {
+        $slug = $request->route('tenant');
+
+        return is_string($slug) && $slug !== '' ? Tenant::find($slug) : null;
     }
 
     private function fromHeader(Request $request): ?Tenant

@@ -147,6 +147,26 @@ abstract class TenantTestCase extends TestCase
         parent::tearDown();
     }
 
+    /**
+     * Re-resolve the authenticated user on every simulated request.
+     *
+     * Laravel's guards cache their user, and the test container survives across
+     * `$this->getJson()` calls - so a second request in one test silently reuses
+     * the first request's user. That masked two genuine authorisation
+     * assertions here: a stranger appeared able to read another member's
+     * payment, and a revoked token appeared still valid.
+     *
+     * Production never behaves this way (a fresh container per request; Octane
+     * flushes guards itself), so this aligns the harness with reality rather
+     * than working around a real defect.
+     */
+    public function call($method, $uri, $parameters = [], $cookies = [], $files = [], $server = [], $content = null)
+    {
+        $this->app['auth']->forgetGuards();
+
+        return parent::call($method, $uri, $parameters, $cookies, $files, $server, $content);
+    }
+
     /** Run a closure inside the tenant's database context. */
     protected function inTenant(callable $callback): mixed
     {

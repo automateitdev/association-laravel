@@ -37,7 +37,22 @@ return [
 
         'database' => [
             'driver' => 'database',
-            'connection' => env('DB_QUEUE_CONNECTION'),
+
+            /*
+             * The queue lives in the CENTRAL database, always.
+             *
+             * Inside tenancy the default connection is the tenant, so leaving
+             * this null makes Laravel look for a `jobs` table in whichever
+             * association happens to be active - a table that does not exist,
+             * and should not: one shared queue with the tenant carried in the
+             * job payload means one worker pool, not one per association.
+             *
+             * Note this is NOT the same as marking the connection `central`,
+             * which would tell stancl/tenancy to STOP stamping tenant_id onto
+             * the payload - the exact opposite of what we need. The jobs table
+             * is central; the jobs themselves are tenant-aware.
+             */
+            'connection' => env('DB_QUEUE_CONNECTION', 'mysql'),
             'table' => env('DB_QUEUE_TABLE', 'jobs'),
             'queue' => env('DB_QUEUE', 'default'),
             'retry_after' => (int) env('DB_QUEUE_RETRY_AFTER', 90),
@@ -122,7 +137,10 @@ return [
 
     'failed' => [
         'driver' => env('QUEUE_FAILED_DRIVER', 'database-uuids'),
-        'database' => env('DB_CONNECTION', 'sqlite'),
+
+        // Central, for the same reason as the queue itself - and because a
+        // failed job must survive whatever went wrong with its association.
+        'database' => 'mysql',
         'table' => 'failed_jobs',
     ],
 

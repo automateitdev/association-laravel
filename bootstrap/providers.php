@@ -1,6 +1,7 @@
 <?php
 
 use App\Providers\AppServiceProvider;
+use App\Providers\TenancyGuardServiceProvider;
 use App\Providers\TenancyServiceProvider;
 
 return [
@@ -12,4 +13,8 @@ return [
     // bootstrap/providers.php. Without this line a tenant is a registry row with
     // no database behind it.
     TenancyServiceProvider::class,
+
+    // Refuses to boot on a cache driver that cannot scope tenant data.
+    // Laravel's default (database) cannot, and the failure is silent.
+    TenancyGuardServiceProvider::class,
 ];

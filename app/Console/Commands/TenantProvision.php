@@ -107,6 +107,13 @@ class TenantProvision extends Command
             $this->newLine();
             $this->error("Provisioning failed: {$e->getMessage()}");
 
+            // Tenant::create() fires TenantCreated synchronously, so the whole
+            // CreateDatabase -> MigrateDatabase pipeline runs INSIDE create().
+            // A failure there leaves $tenant unassigned even though the registry
+            // row was already inserted - re-fetch, or the rollback quietly does
+            // nothing and leaves an orphan database behind.
+            $tenant ??= Tenant::find($slug);
+
             $rollbackNotes = $this->rollback($tenant, $slug);
             $run->fail(
                 $e->getMessage()."\n\nRollback: ".$rollbackNotes,
@@ -163,15 +170,64 @@ class TenantProvision extends Command
             return 'nothing to undo - failed before the tenant row was written.';
         }
 
+        $problems = [];
+
+        // Each step is independent. An early failure must not skip the later
+        // cleanup - that is how an orphan database survives and blocks the next
+        // attempt with the same slug.
+
         try {
             $tenant->domains()->delete();
-            $tenant->delete();
-
-            return 'database, user, domain and registry row removed.';
         } catch (Throwable $e) {
-            return 'MANUAL CLEANUP NEEDED for ['.$slug.']: '.$e->getMessage()
-                .' Remove in this order: domain, registry row, database.';
+            $problems[] = 'domains: '.$e->getMessage();
         }
+
+        try {
+            // Fires TenantDeleted -> DeleteDatabase, which drops the database and
+            // its scoped user. This throws when the pipeline failed before the
+            // database existed, which is expected and not fatal to the rollback.
+            $tenant->delete();
+        } catch (Throwable $e) {
+            $problems[] = 'tenant row: '.$e->getMessage();
+
+            // Make sure the registry row is gone even if the delete pipeline
+            // blew up partway through it.
+            try {
+                Tenant::withoutEvents(fn () => Tenant::where('id', $slug)->delete());
+            } catch (Throwable $inner) {
+                $problems[] = 'registry row: '.$inner->getMessage();
+            }
+        }
+
+        try {
+            $this->forceDropDatabaseArtefacts($slug);
+        } catch (Throwable $e) {
+            $problems[] = 'database/user: '.$e->getMessage();
+        }
+
+        $orphaned = Tenant::find($slug) !== null;
+
+        if ($orphaned || $problems !== []) {
+            return 'PARTIAL - verify by hand for ['.$slug.']: '.implode('; ', $problems);
+        }
+
+        return 'database, user, domain and registry row removed.';
+    }
+
+    /**
+     * Drop the database and MySQL user this slug would own, if they survived.
+     *
+     * Identifiers are derived from the slug, which has already passed
+     * isValidSlug() - lowercase letters, digits and hyphens only - so there is
+     * nothing here an attacker could steer.
+     */
+    private function forceDropDatabaseArtefacts(string $slug): void
+    {
+        $database = config('tenancy.database.prefix').$slug.config('tenancy.database.suffix');
+        $username = $this->databaseUsername($slug);
+
+        \DB::connection('mysql')->statement("DROP DATABASE IF EXISTS `{$database}`");
+        \DB::connection('mysql')->statement("DROP USER IF EXISTS `{$username}`@`%`");
     }
 
     private function isValidSlug(string $slug): bool

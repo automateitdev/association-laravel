@@ -21,6 +21,16 @@ class TenantProvisioningTest extends TestCase
 {
     use RefreshDatabase;
 
+    /** Every slug this file provisions. Teardown drops these and nothing else. */
+    private const TEST_SLUGS = [
+        'acme-society',
+        'migrated-co',
+        'doomed-co',
+        'only-once',
+        'squatter',
+        'pipeline-fail',
+    ];
+
     protected function tearDown(): void
     {
         // Tenant databases outlive RefreshDatabase: it rolls back the central
@@ -107,6 +117,39 @@ class TenantProvisioningTest extends TestCase
         $this->assertSame(TenantProvisioningRun::STATUS_ROLLED_BACK, $run->status);
     }
 
+    /**
+     * T-13, the harder half: the failure happens INSIDE Tenant::create().
+     *
+     * TenantCreated fires synchronously, so CreateDatabase and MigrateDatabase
+     * run before create() returns. A throw there leaves the command's $tenant
+     * variable unassigned even though the registry row is already inserted - and
+     * a rollback that trusts that variable silently does nothing.
+     *
+     * This is not hypothetical: it happened, and it left an orphan database plus
+     * a live MySQL user behind. The first version of this test missed it because
+     * it forced the failure after create() had returned.
+     */
+    public function test_a_failure_inside_the_create_pipeline_still_rolls_back(): void
+    {
+        // Squat the database the pipeline is about to create, so CreateDatabase
+        // throws from inside Tenant::create().
+        DB::connection('mysql')->statement('CREATE DATABASE `tenantpipeline-fail`');
+
+        $this->artisan('tenant:provision', ['slug' => 'pipeline-fail'])->assertFailed();
+
+        $this->assertNull(
+            Tenant::find('pipeline-fail'),
+            'The registry row must not survive a failure inside create().'
+        );
+        $this->assertFalse(
+            $this->mysqlUserExists('t_pipeline_fail'),
+            'The scoped MySQL user must not survive either.'
+        );
+
+        $run = TenantProvisioningRun::where('tenant_id', 'pipeline-fail')->latest('id')->first();
+        $this->assertSame(TenantProvisioningRun::STATUS_ROLLED_BACK, $run?->status);
+    }
+
     public function test_it_refuses_a_duplicate_slug(): void
     {
         $this->artisan('tenant:provision', ['slug' => 'only-once'])->assertSuccessful();
@@ -155,15 +198,22 @@ class TenantProvisioningTest extends TestCase
         return config('tenancy.central_domains')[0] ?? 'localhost';
     }
 
+    /**
+     * Drop only the databases THIS test file creates.
+     *
+     * An earlier version dropped every `tenant%` database, which also destroyed
+     * the developer's local demo tenants. A test suite may not reach outside its
+     * own fixtures - the slugs below are the complete list this file provisions.
+     */
     private function dropStrayTestDatabases(): void
     {
-        $stray = DB::connection('mysql')->select(
-            "SELECT SCHEMA_NAME AS name FROM information_schema.SCHEMATA
-             WHERE SCHEMA_NAME LIKE 'tenant%' AND SCHEMA_NAME <> 'tenant'"
-        );
-
-        foreach ($stray as $row) {
-            DB::connection('mysql')->statement("DROP DATABASE IF EXISTS `{$row->name}`");
+        foreach (self::TEST_SLUGS as $slug) {
+            DB::connection('mysql')->statement(
+                'DROP DATABASE IF EXISTS `'.config('tenancy.database.prefix').$slug.'`'
+            );
+            DB::connection('mysql')->statement(
+                'DROP USER IF EXISTS `t_'.str_replace('-', '_', $slug).'`@`%`'
+            );
         }
     }
 }

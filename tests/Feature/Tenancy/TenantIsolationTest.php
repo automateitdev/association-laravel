@@ -48,10 +48,16 @@ class TenantIsolationTest extends TestCase
             }
         }
 
-        foreach (DB::connection('mysql')->select(
-            "SELECT SCHEMA_NAME AS name FROM information_schema.SCHEMATA WHERE SCHEMA_NAME LIKE 'tenant%'"
-        ) as $row) {
-            DB::connection('mysql')->statement("DROP DATABASE IF EXISTS `{$row->name}`");
+        // Only this file's own tenants. A test suite may not reach outside its
+        // own fixtures - dropping every `tenant%` database also destroys the
+        // developer's local demo tenants.
+        foreach (['alpha-soc', 'beta-soc'] as $slug) {
+            DB::connection('mysql')->statement(
+                'DROP DATABASE IF EXISTS `'.config('tenancy.database.prefix').$slug.'`'
+            );
+            DB::connection('mysql')->statement(
+                'DROP USER IF EXISTS `t_'.str_replace('-', '_', $slug).'`@`%`'
+            );
         }
 
         parent::tearDown();

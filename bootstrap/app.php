@@ -26,6 +26,15 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'ability' => Laravel\Sanctum\Http\Middleware\CheckAbilities::class,
             'abilities' => Laravel\Sanctum\Http\Middleware\CheckForAnyAbility::class,
+
+            // The staff/member boundary. Runs before `permission`, which calls
+            // hasPermissionTo() - a method members do not have.
+            'staff' => App\Http\Middleware\EnsureStaff::class,
+
+            // Live role check against the tenant database. Token abilities are
+            // a snapshot taken at login; this is the authority.
+            'permission' => Spatie\Permission\Middleware\PermissionMiddleware::class,
+            'role' => Spatie\Permission\Middleware\RoleMiddleware::class,
         ]);
 
         /*

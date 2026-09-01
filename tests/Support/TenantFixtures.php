@@ -21,14 +21,23 @@ use App\Models\Tenant\Setting;
  */
 trait TenantFixtures
 {
+    /**
+     * Idempotent, because TenantSeedService may already have seeded these.
+     *
+     * A fixture that explodes when called twice is a trap: it forces every test
+     * to know whether some other helper has run first, which is exactly the
+     * coupling fixtures exist to remove.
+     */
     protected function seedSettings(array $overrides = []): void
     {
         foreach (Setting::defaults() as $key => $spec) {
-            Setting::create([
-                'key' => $key,
-                'value' => $overrides[$key] ?? $spec['value'],
-                'group' => $spec['group'],
-            ]);
+            Setting::updateOrCreate(
+                ['key' => $key],
+                [
+                    'value' => $overrides[$key] ?? $spec['value'],
+                    'group' => $spec['group'],
+                ]
+            );
         }
     }
 

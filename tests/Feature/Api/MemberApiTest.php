@@ -203,6 +203,41 @@ class MemberApiTest extends TenantTestCase
             ]);
     }
 
+    /**
+     * The quote endpoint exists so the APP never adds money up.
+     *
+     * A member must be told what to transfer before the payment is created, and
+     * the only alternative was a client-side sum over decimal strings - the
+     * arithmetic FR-MON-6 forbids. Instalment and fine come back apart, as
+     * everywhere else.
+     */
+    public function test_a_quote_totals_the_chosen_instalments_server_side(): void
+    {
+        [$member, $token, $assign] = $this->memberWithDues();
+
+        $this->withHeaders($this->headers($token))
+            ->postJson('/api/v1/fees/quote', ['fee_assign_ids' => [$assign->id]])
+            ->assertOk()
+            ->assertJsonPath('data.instalment_count', 1)
+            ->assertJsonPath('data.instalment_total', '1000.00')
+            ->assertJsonPath('data.fine_total', '200.00')
+            ->assertJsonPath('data.grand_total', '1200.00');
+    }
+
+    /** D-5 again, at a new entry point: quoting someone else's dues is refused. */
+    public function test_a_member_cannot_quote_another_members_instalments(): void
+    {
+        [$owner, $ownerToken, $assign] = $this->memberWithDues();
+
+        $strangerToken = $this->inTenant(fn () => $this->makeMember(['password' => 'x'])
+            ->createToken('test', ['member.dues.view'])->plainTextToken);
+
+        $this->withHeaders($this->headers($strangerToken))
+            ->postJson('/api/v1/fees/quote', ['fee_assign_ids' => [$assign->id]])
+            ->assertStatus(403)
+            ->assertJsonPath('error.code', 'NOT_OWNER');
+    }
+
     // ---- payments --------------------------------------------------------
 
     public function test_creating_a_payment_requires_an_idempotency_key(): void

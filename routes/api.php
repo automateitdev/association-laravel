@@ -84,6 +84,12 @@ Route::prefix('v1')->group(function () {
         Route::get('/fees/payment-instructions', [DuesController::class, 'instructions'])
             ->middleware('ability:member.dues.view');
 
+        // What a chosen set of instalments comes to. Exists so the app never
+        // adds money up: the member must be told the amount before the payment
+        // is created, and a client-side sum is the arithmetic FR-MON-6 forbids.
+        Route::post('/fees/quote', [DuesController::class, 'quote'])
+            ->middleware('ability:member.dues.view');
+
         Route::get('/payments', [PaymentController::class, 'index'])
             ->middleware('ability:member.payments.view');
 

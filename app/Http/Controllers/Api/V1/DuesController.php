@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Models\Tenant\FeeAssign;
 use App\Models\Tenant\Member;
@@ -105,6 +106,60 @@ class DuesController extends Controller
                 'instalments_paid_amount' => number_format((float) $instalmentsPaidAmount, 2, '.', ''),
                 'fines_paid_amount' => number_format((float) $finesPaidAmount, 2, '.', ''),
                 'shares' => (int) ($member->associatorInfo?->num_or_shares ?? 0),
+            ],
+        ]);
+    }
+
+    /**
+     * What a chosen set of instalments comes to.
+     *
+     * This endpoint exists so the APP never has to add money up.
+     *
+     * The member must be told how much to transfer BEFORE the payment is
+     * created, and the only figure the client could otherwise produce is a
+     * client-side sum - which is precisely the arithmetic this platform forbids
+     * (FR-MON-6). Summing on the phone would also have meant parsing decimal
+     * strings into floats, and floats do not reconcile.
+     *
+     * Ownership is checked here as everywhere else: a member may only quote
+     * their own instalments (FR-RBAC-4).
+     */
+    public function quote(Request $request): JsonResponse
+    {
+        $member = $this->member($request);
+
+        $validated = $request->validate([
+            'fee_assign_ids' => ['required', 'array', 'min:1'],
+            'fee_assign_ids.*' => ['required', 'integer'],
+        ]);
+
+        $assigns = FeeAssign::query()
+            ->whereIn('id', $validated['fee_assign_ids'])
+            ->where('member_id', $member->id)
+            ->get();
+
+        if ($assigns->count() !== count(array_unique($validated['fee_assign_ids']))) {
+            throw ApiException::notOwner('instalment');
+        }
+
+        $instalmentTotal = $assigns->reduce(
+            fn (string $carry, FeeAssign $a) => bcadd($carry, (string) $a->amount, 2),
+            '0.00'
+        );
+        $fineTotal = $assigns->reduce(
+            fn (string $carry, FeeAssign $a) => bcadd($carry, (string) $a->fine_amount, 2),
+            '0.00'
+        );
+
+        return response()->json([
+            'data' => [
+                'instalment_count' => $assigns->count(),
+
+                // Separate, as everywhere else. The app displays all three and
+                // computes none of them.
+                'instalment_total' => $instalmentTotal,
+                'fine_total' => $fineTotal,
+                'grand_total' => bcadd($instalmentTotal, $fineTotal, 2),
             ],
         ]);
     }

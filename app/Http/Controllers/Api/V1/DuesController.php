@@ -7,6 +7,7 @@ namespace App\Http\Controllers\Api\V1;
 use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Models\Tenant\FeeAssign;
+use App\Models\Tenant\FineDate;
 use App\Models\Tenant\Member;
 use App\Models\Tenant\PaymentInfo;
 use App\Models\Tenant\PaymentInfoItem;
@@ -203,12 +204,27 @@ class DuesController extends Controller
     }
 
     /**
-     * How many fine periods have elapsed against this assignment.
+     * How many fine periods have been APPLIED to this assignment.
+     *
+     * Deliberately counts what accrual actually did - `complete` fine dates -
+     * rather than what the wall clock says should have happened by now.
+     *
+     * The two are not the same, and the difference is visible to members. This
+     * count and `fine_amount` travel in the same object, so if they are read
+     * from different clocks they contradict each other: an instalment renders as
+     * "1 month late" while showing no fine at all. That gap opens every night
+     * between a fine date passing and `fines:accrue` running, and stays open
+     * indefinitely if the job fails - which is exactly when a member is most
+     * likely to be looking.
+     *
+     * Counting applied dates makes the badge and the money consistent by
+     * construction: both are then reports of the same accrued state, and the
+     * fine-date series stays the single source of truth (FR-FINE-3).
      */
     private function overduePeriods(FeeAssign $assign): int
     {
         return $assign->fineDates()
-            ->where('fine_date', '<=', now()->toDateString())
+            ->where('status', FineDate::STATUS_COMPLETE)
             ->count();
     }
 

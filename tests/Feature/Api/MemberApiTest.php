@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\Api;
 
 use App\Models\Tenant\FeeAssign;
+use App\Models\Tenant\FineDate;
 use App\Models\Tenant\Member;
 use App\Services\FeeAssignService;
 use App\Services\FineService;
@@ -184,6 +185,60 @@ class MemberApiTest extends TenantTestCase
 
         // There must be no single merged "amount" field to reach for.
         $response->assertJsonMissingPath('data.0.amount');
+    }
+
+    /**
+     * The overdue count and the fine must be reports of the SAME state.
+     *
+     * They travel in one object and a member reads them together, so a count
+     * derived from the wall clock while the fine comes from accrual produces a
+     * visible contradiction - an instalment badged "1 month late" showing no
+     * fine. That window opens every night between a fine date passing and
+     * `fines:accrue` running, and never closes if the job fails.
+     *
+     * Accrual here stops at 2026-02-10, two fine dates in. Wall-clock counting
+     * would keep climbing with the calendar and this assertion would drift;
+     * counting what accrual applied pins it.
+     */
+    public function test_the_overdue_count_agrees_with_the_fine_it_is_sent_with(): void
+    {
+        [$member, $token] = $this->memberWithDues();
+
+        $response = $this->withHeaders($this->headers($token))
+            ->getJson('/api/v1/fees/dues')
+            ->assertOk();
+
+        $response->assertJsonPath('data.0.fine_amount', '200.00');
+
+        // 200.00 at a rate of 100.00 is two applied fine periods. Anything else
+        // is the two figures disagreeing in front of the member.
+        $response->assertJsonPath('data.0.overdue_periods', 2);
+    }
+
+    /**
+     * An instalment inside its grace period carries no fine, so it must not be
+     * reported as late at all. This is the case the demo seeder exists to put on
+     * screen, and it is the one wall-clock counting got wrong.
+     */
+    public function test_an_instalment_with_no_fine_is_not_reported_as_late(): void
+    {
+        [$member, $token] = $this->memberWithDues();
+
+        $this->inTenant(function () use ($member) {
+            $assign = FeeAssign::where('member_id', $member->id)->firstOrFail();
+
+            // Roll accrual back to before the first fine date: dates exist and
+            // have elapsed by today's calendar, but none has been applied.
+            $assign->fineDates()->update(['status' => FineDate::STATUS_INCOMPLETE]);
+            $assign->update(['fine_amount' => '0.00']);
+        });
+
+        $response = $this->withHeaders($this->headers($token))
+            ->getJson('/api/v1/fees/dues')
+            ->assertOk();
+
+        $response->assertJsonPath('data.0.fine_amount', '0.00');
+        $response->assertJsonPath('data.0.overdue_periods', 0);
     }
 
     public function test_the_summary_returns_four_numbers_never_one(): void

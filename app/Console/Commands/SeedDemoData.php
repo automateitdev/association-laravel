@@ -11,6 +11,7 @@ use App\Models\Tenant\FeeSetup;
 use App\Models\Tenant\FineDate;
 use App\Models\Tenant\Ledger;
 use App\Models\Tenant\Member;
+use App\Models\Tenant\PaymentInfo;
 use App\Models\Tenant\Setting;
 use App\Models\User;
 use App\Services\FeeAssignService;
@@ -222,6 +223,32 @@ class SeedDemoData extends Command
                 ledgerId: Ledger::where('name', 'Cash in Hand')->value('id'),
             );
         }
+
+        /*
+         * Stop this one expiring out of the demo.
+         *
+         * A real payment intent is deliberately short-lived, and
+         * `payments:expire-intents` is scheduled to sweep stale ones. Correct for
+         * production, wrong here: it would quietly remove the awaiting-approval
+         * state about an hour after seeding, leaving anyone who came back later
+         * to a demo that no longer shows the case it was seeded to show, with
+         * nothing to say why.
+         *
+         * Applied OUTSIDE the branch above on purpose. Re-running the seeder
+         * finds the payment already pending and creates nothing - so an expiry
+         * set only on creation would never be refreshed, and the demo would
+         * still rot. This is the re-run that has to fix it.
+         *
+         * Fixed rather than relative, for the same reason the accrual date is:
+         * the demo must look identical whenever it is run.
+         *
+         * 2037 rather than something rounder: `expires_at` is a MySQL TIMESTAMP,
+         * which cannot hold a date past 2038-01-19. A far-future sentinel is
+         * exactly the kind of value that finds that ceiling.
+         */
+        PaymentInfo::where('member_id', $member->id)
+            ->where('status', PaymentInfo::STATUS_PENDING)
+            ->update(['expires_at' => CarbonImmutable::parse('2037-01-01 00:00:00')]);
 
         $this->line('  Fatema Begum ......... payment awaiting approval');
     }

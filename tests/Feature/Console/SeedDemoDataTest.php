@@ -6,6 +6,7 @@ namespace Tests\Feature\Console;
 
 use App\Models\Tenant\FeeAssign;
 use App\Models\Tenant\Member;
+use App\Models\Tenant\PaymentInfo;
 use Tests\TenantTestCase;
 
 /**
@@ -83,6 +84,24 @@ class SeedDemoDataTest extends TenantTestCase
                 FeeAssign::where('member_id', $member->id)
                     ->where('status', FeeAssign::STATUS_REQUESTED)
                     ->count(),
+            );
+
+            /*
+             * And it must not expire out of the demo.
+             *
+             * Payment intents are deliberately short-lived and
+             * `payments:expire-intents` is scheduled to sweep them. Without a
+             * pushed-out expiry this state quietly disappears about an hour
+             * after seeding - the demo does not fail, it just stops showing the
+             * case it exists to show, which is far harder to notice.
+             */
+            $payment = PaymentInfo::where('member_id', $member->id)
+                ->where('status', PaymentInfo::STATUS_PENDING)
+                ->firstOrFail();
+
+            self::assertTrue(
+                $payment->expires_at->year >= 2037,
+                'The demo pending payment must not expire during a demo.',
             );
         });
     }

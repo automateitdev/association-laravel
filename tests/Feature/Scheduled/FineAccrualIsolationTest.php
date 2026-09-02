@@ -12,6 +12,7 @@ use App\Services\TenantSeedService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\Support\TenantFixtures;
+use Tests\Support\ParallelSlugs;
 use Tests\TestCase;
 
 /**
@@ -28,6 +29,7 @@ use Tests\TestCase;
  */
 class FineAccrualIsolationTest extends TestCase
 {
+    use ParallelSlugs;
     use RefreshDatabase;
     use TenantFixtures;
 
@@ -39,7 +41,8 @@ class FineAccrualIsolationTest extends TestCase
     {
         parent::setUp();
 
-        foreach ([self::HEALTHY, self::BROKEN] as $slug) {
+        foreach ([self::HEALTHY, self::BROKEN] as $base) {
+            $slug = $this->slugFor($base);
             $this->artisan('tenant:provision', ['slug' => $slug])->assertSuccessful();
 
             Tenant::find($slug)->run(function () {
@@ -55,18 +58,13 @@ class FineAccrualIsolationTest extends TestCase
 
     protected function tearDown(): void
     {
-        foreach ([self::HEALTHY, self::BROKEN] as $slug) {
+        foreach ([self::HEALTHY, self::BROKEN] as $base) {
             try {
-                Tenant::find($slug)?->delete();
+                Tenant::find($this->slugFor($base))?->delete();
             } catch (\Throwable) {
             }
 
-            DB::connection('mysql')->statement(
-                'DROP DATABASE IF EXISTS `'.config('tenancy.database.prefix').$slug.'`'
-            );
-            DB::connection('mysql')->statement(
-                'DROP USER IF EXISTS `t_'.str_replace('-', '_', $slug).'`@`%`'
-            );
+            $this->dropTenantArtefactsFor($base);
         }
 
         parent::tearDown();
@@ -75,13 +73,13 @@ class FineAccrualIsolationTest extends TestCase
     public function test_one_tenants_failure_does_not_stop_the_others(): void
     {
         // Break the second association for real.
-        Tenant::find(self::BROKEN)->run(fn () => DB::statement('DROP TABLE fine_dates'));
+        Tenant::find($this->slugFor(self::BROKEN))->run(fn () => DB::statement('DROP TABLE fine_dates'));
 
         $this->artisan('fines:accrue', ['--as-of' => '2026-03-15'])
             ->assertFailed();   // non-zero, so monitoring notices
 
         // The healthy association accrued regardless: 3 elapsed periods x 100.
-        Tenant::find(self::HEALTHY)->run(function () {
+        Tenant::find($this->slugFor(self::HEALTHY))->run(function () {
             $assign = FeeAssign::firstOrFail();
 
             $this->assertSame(
@@ -98,18 +96,18 @@ class FineAccrualIsolationTest extends TestCase
      */
     public function test_every_tenants_run_is_recorded(): void
     {
-        Tenant::find(self::BROKEN)->run(fn () => DB::statement('DROP TABLE fine_dates'));
+        Tenant::find($this->slugFor(self::BROKEN))->run(fn () => DB::statement('DROP TABLE fine_dates'));
 
         $this->artisan('fines:accrue', ['--as-of' => '2026-03-15']);
 
         $this->assertDatabaseHas('tenant_provisioning_runs', [
-            'tenant_id' => self::HEALTHY,
+            'tenant_id' => $this->slugFor(self::HEALTHY),
             'command' => 'fines:accrue',
             'status' => TenantProvisioningRun::STATUS_SUCCEEDED,
         ]);
 
         $this->assertDatabaseHas('tenant_provisioning_runs', [
-            'tenant_id' => self::BROKEN,
+            'tenant_id' => $this->slugFor(self::BROKEN),
             'command' => 'fines:accrue',
             'status' => TenantProvisioningRun::STATUS_FAILED,
         ]);
@@ -119,7 +117,8 @@ class FineAccrualIsolationTest extends TestCase
     {
         $this->artisan('fines:accrue', ['--as-of' => '2026-03-15'])->assertSuccessful();
 
-        foreach ([self::HEALTHY, self::BROKEN] as $slug) {
+        foreach ([self::HEALTHY, self::BROKEN] as $base) {
+            $slug = $this->slugFor($base);
             Tenant::find($slug)->run(function () use ($slug) {
                 $this->assertSame(
                     '300.00',
@@ -133,7 +132,7 @@ class FineAccrualIsolationTest extends TestCase
     /** A suspended association keeps accruing - dues do not pause (FR-TEN-8). */
     public function test_a_suspended_association_still_accrues(): void
     {
-        Tenant::find(self::BROKEN)->update(['status' => Tenant::STATUS_SUSPENDED]);
+        Tenant::find($this->slugFor(self::BROKEN))->update(['status' => Tenant::STATUS_SUSPENDED]);
 
         $this->artisan('fines:accrue', ['--as-of' => '2026-03-15'])->assertSuccessful();
 
@@ -141,7 +140,7 @@ class FineAccrualIsolationTest extends TestCase
         // suspended association is skipped here by design - its dues resume
         // accruing on reinstatement because the fine-date series is recomputed,
         // not incremented. This asserts the sweep does not crash on it.
-        Tenant::find(self::HEALTHY)->run(
+        Tenant::find($this->slugFor(self::HEALTHY))->run(
             fn () => $this->assertSame('300.00', FeeAssign::firstOrFail()->fine_amount)
         );
     }
@@ -149,15 +148,15 @@ class FineAccrualIsolationTest extends TestCase
     public function test_a_single_association_can_be_targeted(): void
     {
         $this->artisan('fines:accrue', [
-            '--tenant' => self::HEALTHY,
+            '--tenant' => $this->slugFor(self::HEALTHY),
             '--as-of' => '2026-03-15',
         ])->assertSuccessful();
 
-        Tenant::find(self::HEALTHY)->run(
+        Tenant::find($this->slugFor(self::HEALTHY))->run(
             fn () => $this->assertSame('300.00', FeeAssign::firstOrFail()->fine_amount)
         );
 
-        Tenant::find(self::BROKEN)->run(
+        Tenant::find($this->slugFor(self::BROKEN))->run(
             fn () => $this->assertSame('0.00', FeeAssign::firstOrFail()->fine_amount)
         );
     }

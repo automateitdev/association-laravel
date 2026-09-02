@@ -27,7 +27,7 @@ class MemberApiTest extends TenantTestCase
     private function headers(?string $token = null): array
     {
         return array_filter([
-            'X-Tenant' => self::SLUG,
+            'X-Tenant' => $this->slug(),
             'Accept' => 'application/json',
             'Authorization' => $token ? "Bearer {$token}" : null,
         ]);
@@ -77,9 +77,9 @@ class MemberApiTest extends TenantTestCase
     /** The lookup endpoint must not become a directory of associations. */
     public function test_tenant_lookup_returns_display_information_only(): void
     {
-        $this->getJson('/api/v1/tenants/lookup?slug='.self::SLUG)
+        $this->getJson('/api/v1/tenants/lookup?slug='.$this->slug())
             ->assertOk()
-            ->assertJsonPath('data.slug', self::SLUG)
+            ->assertJsonPath('data.slug', $this->slug())
             ->assertJsonStructure(['data' => ['slug', 'name', 'locale', 'currency', 'timezone']])
             ->assertJsonMissingPath('data.db_name')
             ->assertJsonMissingPath('data.member_count');

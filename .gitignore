@@ -28,3 +28,16 @@ Thumbs.db
 
 # Local database dumps and scratch
 /database/*.sqlite
+
+# Parallel test scratch output
+/par.txt
+
+# Per-tenant storage created by stancl's filesystem bootstrapper.
+# Tests upload real files into these; none of it belongs in git.
+/storage/tenant*/
+
+# Parallel test scratch output
+/par.txt
+
+# Captured parallel-test logs
+ptest-*.log

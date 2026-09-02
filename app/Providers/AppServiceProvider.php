@@ -70,9 +70,24 @@ class AppServiceProvider extends ServiceProvider
                 return;
             }
 
-            // Metadata locks (DDL) and row locks respectively.
-            $event->connection->statement('SET SESSION lock_wait_timeout = 15');
-            $event->connection->statement('SET SESSION innodb_lock_wait_timeout = 15');
+            /*
+             * 60 seconds, not 15.
+             *
+             * 15 was chosen only to turn an infinite hang into an error, and it
+             * did that job. But parallel workers provision real tenants, and
+             * CREATE/DROP DATABASE plus CREATE/DROP USER contend for global
+             * metadata locks - mysql.user writes especially. Under four workers
+             * an honest DDL queue could exceed 15s and fail a CREATE TABLE,
+             * which looked exactly like a tenancy bug.
+             *
+             * 60 still fails fast against MySQL's default of a YEAR, while
+             * tolerating legitimate contention. An intermittently red suite is
+             * worse than a slow one: it teaches people to re-run rather than
+             * investigate, and here the thing they would learn to shrug off is
+             * a tenancy failure.
+             */
+            $event->connection->statement('SET SESSION lock_wait_timeout = 60');
+            $event->connection->statement('SET SESSION innodb_lock_wait_timeout = 60');
         });
     }
 }

@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Tests\Support\Jobs\RecordTenantMarkerJob;
+use Tests\Support\ParallelSlugs;
 use Tests\TestCase;
 
 /**
@@ -44,6 +45,7 @@ use Tests\TestCase;
  */
 class CacheAndQueueIsolationTest extends TestCase
 {
+    use ParallelSlugs;
     use RefreshDatabase;
 
     private const ALPHA = 'cache-alpha';
@@ -58,28 +60,23 @@ class CacheAndQueueIsolationTest extends TestCase
     {
         parent::setUp();
 
-        foreach ([self::ALPHA, self::BETA] as $slug) {
-            $this->artisan('tenant:provision', ['slug' => $slug])->assertSuccessful();
+        foreach ([self::ALPHA, self::BETA] as $base) {
+            $this->artisan('tenant:provision', ['slug' => $this->slugFor($base)])->assertSuccessful();
         }
 
-        $this->alpha = Tenant::find(self::ALPHA);
-        $this->beta = Tenant::find(self::BETA);
+        $this->alpha = Tenant::find($this->slugFor(self::ALPHA));
+        $this->beta = Tenant::find($this->slugFor(self::BETA));
     }
 
     protected function tearDown(): void
     {
-        foreach ([self::ALPHA, self::BETA] as $slug) {
+        foreach ([self::ALPHA, self::BETA] as $base) {
             try {
-                Tenant::find($slug)?->delete();
+                Tenant::find($this->slugFor($base))?->delete();
             } catch (\Throwable) {
             }
 
-            DB::connection('mysql')->statement(
-                'DROP DATABASE IF EXISTS `'.config('tenancy.database.prefix').$slug.'`'
-            );
-            DB::connection('mysql')->statement(
-                'DROP USER IF EXISTS `t_'.str_replace('-', '_', $slug).'`@`%`'
-            );
+            $this->dropTenantArtefactsFor($base);
         }
 
         parent::tearDown();
@@ -223,7 +220,7 @@ class CacheAndQueueIsolationTest extends TestCase
             fn () => DB::table('settings')->where('key', 'marker.from-alpha')->exists()
         );
 
-        $this->assertSame('"'.self::ALPHA.'"', $inAlpha, 'The job must run in its own association.');
+        $this->assertSame('"'.$this->slugFor(self::ALPHA).'"', $inAlpha, 'The job must run in its own association.');
         $this->assertFalse($inBeta, 'The job must not touch another association.');
     }
 
@@ -249,11 +246,11 @@ class CacheAndQueueIsolationTest extends TestCase
         Artisan::call('queue:work', ['--stop-when-empty' => true, '--tries' => 1]);
 
         $this->assertSame(
-            '"'.self::ALPHA.'"',
+            '"'.$this->slugFor(self::ALPHA).'"',
             $this->alpha->run(fn () => DB::table('settings')->where('key', 'marker.marker')->value('value'))
         );
         $this->assertSame(
-            '"'.self::BETA.'"',
+            '"'.$this->slugFor(self::BETA).'"',
             $this->beta->run(fn () => DB::table('settings')->where('key', 'marker.marker')->value('value'))
         );
 

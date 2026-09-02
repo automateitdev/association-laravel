@@ -8,6 +8,7 @@ use App\Models\Tenant;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Tests\Support\ParallelSlugs;
 use Tests\TestCase;
 
 /**
@@ -24,8 +25,10 @@ use Tests\TestCase;
  */
 class MoneyInvariantsTest extends TestCase
 {
+    use ParallelSlugs;
     use RefreshDatabase;
 
+    /** Base name; the live slug carries the parallel process token. */
     private const SLUG = 'invariants-co';
 
     private Tenant $tenant;
@@ -38,8 +41,9 @@ class MoneyInvariantsTest extends TestCase
     {
         parent::setUp();
 
-        $this->artisan('tenant:provision', ['slug' => self::SLUG])->assertSuccessful();
-        $this->tenant = Tenant::find(self::SLUG);
+        $slug = $this->slugFor(self::SLUG);
+        $this->artisan('tenant:provision', ['slug' => $slug])->assertSuccessful();
+        $this->tenant = Tenant::find($slug);
 
         [$this->memberId, $this->feeSetupId] = $this->tenant->run(function () {
             $categoryId = DB::table('account_categories')->insertGetId([
@@ -75,12 +79,11 @@ class MoneyInvariantsTest extends TestCase
     protected function tearDown(): void
     {
         try {
-            Tenant::find(self::SLUG)?->delete();
+            Tenant::find($this->slugFor(self::SLUG))?->delete();
         } catch (\Throwable) {
         }
 
-        DB::connection('mysql')->statement('DROP DATABASE IF EXISTS `tenant'.self::SLUG.'`');
-        DB::connection('mysql')->statement("DROP USER IF EXISTS `t_invariants_co`@`%`");
+        $this->dropTenantArtefactsFor(self::SLUG);
 
         parent::tearDown();
     }
@@ -197,7 +200,7 @@ class MoneyInvariantsTest extends TestCase
              FROM information_schema.COLUMNS
              WHERE TABLE_SCHEMA = ?
                AND COLUMN_NAME IN ('amount','fine_amount','payable_amount','total_amount','debit','credit','gateway_amount')",
-            ['tenant'.self::SLUG]
+            [$this->databaseNameFor(self::SLUG)]
         );
 
         $this->assertNotEmpty($columns);

@@ -35,7 +35,7 @@ class GatewayTest extends TenantTestCase
     private function headers(?string $token = null): array
     {
         return array_filter([
-            'X-Tenant' => self::SLUG,
+            'X-Tenant' => $this->slug(),
             'Accept' => 'application/json',
             'Authorization' => $token ? "Bearer {$token}" : null,
         ]);
@@ -141,7 +141,7 @@ class GatewayTest extends TenantTestCase
         [$payment, $session] = $this->createOnlinePayment($token, $assign->id);
 
         $this->postJson(
-            "/api/v1/webhooks/".self::SLUG."/gateway",
+            "/api/v1/webhooks/".$this->slug()."/gateway",
             ['reference' => $session['reference'], 'status' => 'paid'],
             ['X-Gateway-Signature' => 'valid-signature'],
         )->assertOk()->assertJsonPath('data.outcome', 'completed');
@@ -174,7 +174,7 @@ class GatewayTest extends TenantTestCase
         );
 
         $this->postJson(
-            "/api/v1/webhooks/".self::SLUG."/gateway",
+            "/api/v1/webhooks/".$this->slug()."/gateway",
             ['reference' => $session['reference']],
             ['X-Gateway-Signature' => 'valid-signature'],
         )->assertOk();
@@ -199,7 +199,7 @@ class GatewayTest extends TenantTestCase
         [$payment, $session] = $this->createOnlinePayment($token, $assign->id);
 
         $call = fn () => $this->postJson(
-            "/api/v1/webhooks/".self::SLUG."/gateway",
+            "/api/v1/webhooks/".$this->slug()."/gateway",
             ['reference' => $session['reference']],
             ['X-Gateway-Signature' => 'valid-signature'],
         );
@@ -233,7 +233,7 @@ class GatewayTest extends TenantTestCase
         [$payment, $session] = $this->createOnlinePayment($token, $assign->id);
 
         $this->postJson(
-            "/api/v1/webhooks/".self::SLUG."/gateway",
+            "/api/v1/webhooks/".$this->slug()."/gateway",
             ['reference' => $session['reference']],
             ['X-Gateway-Signature' => 'forged'],
         )->assertOk()->assertJsonPath('data.outcome', 'refused');
@@ -252,7 +252,7 @@ class GatewayTest extends TenantTestCase
         $this->inTenant(fn () => app(TenantSeedService::class)->seedAll());
 
         $this->postJson(
-            "/api/v1/webhooks/".self::SLUG."/gateway",
+            "/api/v1/webhooks/".$this->slug()."/gateway",
             ['reference' => 'NOT-A-REAL-REFERENCE'],
             ['X-Gateway-Signature' => 'valid-signature'],
         )->assertOk()->assertJsonPath('data.outcome', 'refused');
@@ -273,7 +273,7 @@ class GatewayTest extends TenantTestCase
         $this->inTenant(fn () => app(TenantSeedService::class)->seedAll());
 
         $this->postJson(
-            "/api/v1/webhooks/".self::SLUG."/gateway",
+            "/api/v1/webhooks/".$this->slug()."/gateway",
             ['reference' => 'UNKNOWN'],
             ['X-Gateway-Signature' => 'forged'],
         )->assertStatus(200);
@@ -316,7 +316,7 @@ class GatewayTest extends TenantTestCase
         app(FakePaymentGateway::class)->willReport($session['reference'], GatewayVerification::FAILED);
 
         $this->postJson(
-            "/api/v1/webhooks/".self::SLUG."/gateway",
+            "/api/v1/webhooks/".$this->slug()."/gateway",
             ['reference' => $session['reference']],
             ['X-Gateway-Signature' => 'valid-signature'],
         )->assertOk()->assertJsonPath('data.outcome', 'released');

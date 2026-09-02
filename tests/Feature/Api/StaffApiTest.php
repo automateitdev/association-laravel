@@ -30,7 +30,7 @@ class StaffApiTest extends TenantTestCase
     private function headers(?string $token = null): array
     {
         return array_filter([
-            'X-Tenant' => self::SLUG,
+            'X-Tenant' => $this->slug(),
             'Accept' => 'application/json',
             'Authorization' => $token ? "Bearer {$token}" : null,
         ]);

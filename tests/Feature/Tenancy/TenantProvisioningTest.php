@@ -9,6 +9,7 @@ use App\Models\TenantProvisioningRun;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\ParallelSlugs;
 use Tests\TestCase;
 
 /**
@@ -19,9 +20,10 @@ use Tests\TestCase;
  */
 class TenantProvisioningTest extends TestCase
 {
+    use ParallelSlugs;
     use RefreshDatabase;
 
-    /** Every slug this file provisions. Teardown drops these and nothing else. */
+    /** Every BASE slug this file provisions; the live ones carry the process token. */
     private const TEST_SLUGS = [
         'acme-society',
         'migrated-co',
@@ -52,26 +54,26 @@ class TenantProvisioningTest extends TestCase
     public function test_it_provisions_a_tenant_with_database_user_and_domain(): void
     {
         $this->artisan('tenant:provision', [
-            'slug' => 'acme-society',
+            'slug' => $this->slugFor('acme-society'),
             '--name' => 'Acme Cooperative Society',
         ])->assertSuccessful();
 
-        $tenant = Tenant::find('acme-society');
+        $tenant = Tenant::find($this->slugFor('acme-society'));
 
         $this->assertNotNull($tenant, 'The tenant registry row should exist.');
         $this->assertSame(Tenant::STATUS_ACTIVE, $tenant->status);
         $this->assertNotNull($tenant->onboarded_at);
 
         // The slug is the key (FR-TEN-5), not an auto-incrementing integer.
-        $this->assertSame('acme-society', $tenant->getKey());
+        $this->assertSame($this->slugFor('acme-society'), $tenant->getKey());
         $this->assertFalse($tenant->getIncrementing());
         $this->assertSame('string', $tenant->getKeyType());
 
-        $this->assertTrue($this->databaseExists('tenantacme-society'));
-        $this->assertTrue($this->mysqlUserExists('t_acme_society'));
+        $this->assertTrue($this->databaseExists($this->databaseNameFor('acme-society')));
+        $this->assertTrue($this->mysqlUserExists($this->databaseUserFor('acme-society')));
 
         $this->assertSame(
-            'acme-society',
+            $this->slugFor('acme-society'),
             $tenant->domains()->first()->tenant_id,
             'The domain must point at the slug, not at 0.'
         );
@@ -79,9 +81,9 @@ class TenantProvisioningTest extends TestCase
 
     public function test_the_tenant_database_carries_its_migrations(): void
     {
-        $this->artisan('tenant:provision', ['slug' => 'migrated-co'])->assertSuccessful();
+        $this->artisan('tenant:provision', ['slug' => $this->slugFor('migrated-co')])->assertSuccessful();
 
-        $hasUsers = Tenant::find('migrated-co')->run(
+        $hasUsers = Tenant::find($this->slugFor('migrated-co'))->run(
             fn () => \Schema::hasTable('users')
         );
 
@@ -98,21 +100,21 @@ class TenantProvisioningTest extends TestCase
     {
         // Force the failure after the database is created, by taking the domain
         // the command is about to claim.
-        $squatter = Tenant::create(['id' => 'squatter', 'name' => 'Squatter']);
-        $squatter->domains()->create(['domain' => 'doomed-co.'.$this->centralDomain()]);
+        $squatter = Tenant::create(['id' => $this->slugFor('squatter'), 'name' => 'Squatter']);
+        $squatter->domains()->create(['domain' => $this->slugFor('doomed-co').'.'.$this->centralDomain()]);
 
-        $this->artisan('tenant:provision', ['slug' => 'doomed-co'])->assertFailed();
+        $this->artisan('tenant:provision', ['slug' => $this->slugFor('doomed-co')])->assertFailed();
 
         $this->assertNull(
-            Tenant::find('doomed-co'),
+            Tenant::find($this->slugFor('doomed-co')),
             'The registry row must be rolled back.'
         );
         $this->assertFalse(
-            $this->databaseExists('tenantdoomed-co'),
+            $this->databaseExists($this->databaseNameFor('doomed-co')),
             'The tenant database must be dropped.'
         );
 
-        $run = TenantProvisioningRun::where('tenant_id', 'doomed-co')->latest('id')->first();
+        $run = TenantProvisioningRun::where('tenant_id', $this->slugFor('doomed-co'))->latest('id')->first();
         $this->assertNotNull($run, 'The failed run must still be recorded.');
         $this->assertSame(TenantProvisioningRun::STATUS_ROLLED_BACK, $run->status);
     }
@@ -133,29 +135,29 @@ class TenantProvisioningTest extends TestCase
     {
         // Squat the database the pipeline is about to create, so CreateDatabase
         // throws from inside Tenant::create().
-        DB::connection('mysql')->statement('CREATE DATABASE `tenantpipeline-fail`');
+        DB::connection('mysql')->statement('CREATE DATABASE `'.$this->databaseNameFor('pipeline-fail').'`');
 
-        $this->artisan('tenant:provision', ['slug' => 'pipeline-fail'])->assertFailed();
+        $this->artisan('tenant:provision', ['slug' => $this->slugFor('pipeline-fail')])->assertFailed();
 
         $this->assertNull(
-            Tenant::find('pipeline-fail'),
+            Tenant::find($this->slugFor('pipeline-fail')),
             'The registry row must not survive a failure inside create().'
         );
         $this->assertFalse(
-            $this->mysqlUserExists('t_pipeline_fail'),
+            $this->mysqlUserExists($this->databaseUserFor('pipeline-fail')),
             'The scoped MySQL user must not survive either.'
         );
 
-        $run = TenantProvisioningRun::where('tenant_id', 'pipeline-fail')->latest('id')->first();
+        $run = TenantProvisioningRun::where('tenant_id', $this->slugFor('pipeline-fail'))->latest('id')->first();
         $this->assertSame(TenantProvisioningRun::STATUS_ROLLED_BACK, $run?->status);
     }
 
     public function test_it_refuses_a_duplicate_slug(): void
     {
-        $this->artisan('tenant:provision', ['slug' => 'only-once'])->assertSuccessful();
-        $this->artisan('tenant:provision', ['slug' => 'only-once'])->assertFailed();
+        $this->artisan('tenant:provision', ['slug' => $this->slugFor('only-once')])->assertSuccessful();
+        $this->artisan('tenant:provision', ['slug' => $this->slugFor('only-once')])->assertFailed();
 
-        $this->assertSame(1, Tenant::where('id', 'only-once')->count());
+        $this->assertSame(1, Tenant::where('id', $this->slugFor('only-once'))->count());
     }
 
     #[DataProvider('invalidSlugs')]
@@ -207,13 +209,8 @@ class TenantProvisioningTest extends TestCase
      */
     private function dropStrayTestDatabases(): void
     {
-        foreach (self::TEST_SLUGS as $slug) {
-            DB::connection('mysql')->statement(
-                'DROP DATABASE IF EXISTS `'.config('tenancy.database.prefix').$slug.'`'
-            );
-            DB::connection('mysql')->statement(
-                'DROP USER IF EXISTS `t_'.str_replace('-', '_', $slug).'`@`%`'
-            );
+        foreach (self::TEST_SLUGS as $base) {
+            $this->dropTenantArtefactsFor($base);
         }
     }
 }

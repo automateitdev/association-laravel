@@ -8,6 +8,7 @@ use App\Models\Tenant;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Tests\Support\ParallelSlugs;
 
 /**
  * Base class for tests that need a working tenant.
@@ -33,15 +34,22 @@ use Illuminate\Support\Facades\Schema;
  */
 abstract class TenantTestCase extends TestCase
 {
+    use ParallelSlugs;
     use RefreshDatabase;
 
+    /** Base name. The live slug is this plus the parallel process token. */
     protected const SLUG = 'testco';
-
-    protected const DB_USERNAME = 't_testco';
 
     /** Fixed, because it must be reconstructable on every test. Test-only. */
     protected const DB_PASSWORD = 'testco-local-only';
 
+    /** The live slug for THIS process. */
+    protected function slug(): string
+    {
+        return $this->slugFor(static::SLUG);
+    }
+
+    /** Per process: each parallel worker builds its own tenant database once. */
     private static bool $databaseBuilt = false;
 
     protected Tenant $tenant;
@@ -86,10 +94,10 @@ abstract class TenantTestCase extends TestCase
     private function tenantAttributes(): array
     {
         return [
-            'id' => self::SLUG,
+            'id' => $this->slug(),
             'name' => 'Test Association',
             'status' => Tenant::STATUS_ACTIVE,
-            'tenancy_db_username' => self::DB_USERNAME,
+            'tenancy_db_username' => $this->databaseUserFor(static::SLUG),
             'tenancy_db_password' => self::DB_PASSWORD,
         ];
     }
@@ -117,14 +125,30 @@ abstract class TenantTestCase extends TestCase
 
             DB::statement('SET FOREIGN_KEY_CHECKS = 1');
         });
+
+        $this->clearTenantUploads();
+    }
+
+    /**
+     * Truncating tables does not remove the files those rows pointed at.
+     *
+     * Payment-document tests upload real images, and without this they pile up
+     * under storage/tenant<slug>/ run after run - thousands of orphaned files
+     * that nothing references and nobody notices until they are staged into a
+     * commit.
+     */
+    protected function clearTenantUploads(): void
+    {
+        $this->tenant->run(function () {
+            foreach (['payment-documents', 'member-documents'] as $directory) {
+                \Illuminate\Support\Facades\Storage::disk('local')->deleteDirectory($directory);
+            }
+        });
     }
 
     protected function dropTenantArtefacts(): void
     {
-        $database = config('tenancy.database.prefix').self::SLUG;
-
-        DB::connection('mysql')->statement("DROP DATABASE IF EXISTS `{$database}`");
-        DB::connection('mysql')->statement('DROP USER IF EXISTS `'.self::DB_USERNAME.'`@`%`');
+        $this->dropTenantArtefactsFor(static::SLUG);
     }
 
     /**

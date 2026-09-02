@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\Api;
 
 use App\Models\Tenant\FeeAssign;
+use App\Models\Tenant\AssociatorInfo;
 use App\Models\Tenant\Member;
 use App\Models\Tenant\PaymentInfo;
 use App\Models\User;
@@ -148,6 +149,140 @@ class StaffApiTest extends TenantTestCase
             ->postJson("/api/v1/staff/members/{$memberId}/suspend", [])
             ->assertStatus(422)
             ->assertJsonPath('error.code', 'VALIDATION_FAILED');
+    }
+
+    /**
+     * The association's own practice, carried over deliberately.
+     *
+     * A member exists before anyone knows their membership number. The legacy
+     * registration form has no field for it; the number is typed later on a
+     * screen labelled "Office use only". So creation must produce a society
+     * record with no number, and that must not be an error state.
+     */
+    public function test_a_new_member_gets_a_society_record_with_no_number_yet(): void
+    {
+        $token = $this->staffToken();
+
+        $memberId = $this->withHeaders($this->headers($token))
+            ->postJson('/api/v1/staff/members', ['name' => 'Unnumbered', 'mobile' => '01766666666'])
+            ->assertStatus(201)
+            ->json('data.id');
+
+        $this->inTenant(function () use ($memberId) {
+            $info = AssociatorInfo::where('member_id', $memberId)->first();
+
+            self::assertNotNull($info, 'A member must have a society record from the moment they exist.');
+            self::assertNull($info->membership_no, 'The number is assigned by the office, later.');
+        });
+    }
+
+    public function test_the_office_assigns_the_membership_number_afterwards(): void
+    {
+        $token = $this->staffToken();
+
+        $memberId = $this->withHeaders($this->headers($token))
+            ->postJson('/api/v1/staff/members', ['name' => 'To Number', 'mobile' => '01755555511'])
+            ->json('data.id');
+
+        // Zero-padded numeric, matching the association's register - 315 live
+        // numbers running 01..317, no prefix.
+        $this->withHeaders($this->headers($token))
+            ->putJson("/api/v1/staff/members/{$memberId}/associator-info", [
+                'membership_no' => '318',
+                'join_date' => '2026-03-15',
+            ])
+            ->assertOk()
+            ->assertJsonPath('data.membership_no', '318')
+            ->assertJsonPath('data.join_date', '2026-03-15');
+
+        $this->inTenant(function () use ($memberId) {
+            $this->assertDatabaseHas('audit_logs', [
+                'subject_id' => $memberId,
+                'action' => 'member.associator_info_assigned',
+            ]);
+        });
+    }
+
+    /**
+     * FR-MEM-3: unique within the association.
+     *
+     * More than the legacy schema enforced - there `membershp_number` was a
+     * plain nullable string with no index, and uniqueness held only because
+     * staff were careful. They were, across 315 rows, but nothing made them.
+     */
+    public function test_a_membership_number_cannot_be_reused(): void
+    {
+        $token = $this->staffToken();
+
+        $first = $this->withHeaders($this->headers($token))
+            ->postJson('/api/v1/staff/members', ['name' => 'First', 'mobile' => '01755555522'])
+            ->json('data.id');
+        $second = $this->withHeaders($this->headers($token))
+            ->postJson('/api/v1/staff/members', ['name' => 'Second', 'mobile' => '01755555533'])
+            ->json('data.id');
+
+        $this->withHeaders($this->headers($token))
+            ->putJson("/api/v1/staff/members/{$first}/associator-info", ['membership_no' => '400'])
+            ->assertOk();
+
+        $this->withHeaders($this->headers($token))
+            ->putJson("/api/v1/staff/members/{$second}/associator-info", ['membership_no' => '400'])
+            ->assertStatus(422)
+            ->assertJsonPath('error.code', 'VALIDATION_FAILED');
+    }
+
+    /** Correcting a member's own number must not collide with itself. */
+    public function test_reassigning_the_same_number_to_the_same_member_is_allowed(): void
+    {
+        $token = $this->staffToken();
+
+        $memberId = $this->withHeaders($this->headers($token))
+            ->postJson('/api/v1/staff/members', ['name' => 'Same', 'mobile' => '01755555544'])
+            ->json('data.id');
+
+        $this->withHeaders($this->headers($token))
+            ->putJson("/api/v1/staff/members/{$memberId}/associator-info", ['membership_no' => '401'])
+            ->assertOk();
+
+        $this->withHeaders($this->headers($token))
+            ->putJson("/api/v1/staff/members/{$memberId}/associator-info", [
+                'membership_no' => '401',
+                'designation' => 'Deputy Secretary',
+            ])
+            ->assertOk()
+            ->assertJsonPath('data.membership_no', '401');
+    }
+
+    /**
+     * Share count is derived, not typed.
+     *
+     * `num_or_shares` is a denormalised total maintained by ShareService from
+     * share payments. Accepting it here would let the figure staff read drift
+     * permanently from the ledger it comes from - which is precisely why the
+     * legacy system's two sources disagree.
+     */
+    public function test_the_share_count_cannot_be_set_by_hand(): void
+    {
+        $token = $this->staffToken();
+
+        $memberId = $this->withHeaders($this->headers($token))
+            ->postJson('/api/v1/staff/members', ['name' => 'Shares', 'mobile' => '01755555555'])
+            ->json('data.id');
+
+        $this->withHeaders($this->headers($token))
+            ->putJson("/api/v1/staff/members/{$memberId}/associator-info", [
+                'membership_no' => '402',
+                'num_or_shares' => 9999,
+            ])
+            ->assertOk();
+
+        $this->inTenant(function () use ($memberId) {
+            self::assertSame(
+                0,
+                (int) AssociatorInfo::where('member_id', $memberId)->value('num_or_shares'),
+                'Shares must come from share payments, never from this endpoint.',
+            );
+        });
     }
 
     // ---- fee heads -------------------------------------------------------

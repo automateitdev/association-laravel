@@ -147,6 +147,12 @@ Route::prefix('v1')->group(function () {
             Route::put('/members/{member}', [MemberController::class, 'update'])
                 ->middleware('permission:members.edit');
 
+            // The society record: number, join date, share number, employer.
+            // Gated on members.edit rather than members.approve - assigning a
+            // number is office record-keeping, not the decision to admit.
+            Route::put('/members/{member}/associator-info', [MemberController::class, 'assignAssociatorInfo'])
+                ->middleware('permission:members.edit');
+
             Route::post('/members/{member}/approve', [MemberController::class, 'approve'])
                 ->middleware('permission:members.approve');
             Route::post('/members/{member}/reject', [MemberController::class, 'reject'])

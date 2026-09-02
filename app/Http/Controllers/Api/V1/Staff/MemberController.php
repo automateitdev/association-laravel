@@ -6,11 +6,13 @@ namespace App\Http\Controllers\Api\V1\Staff;
 
 use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
+use App\Models\Tenant\AssociatorInfo;
 use App\Models\Tenant\AuditLog;
 use App\Models\Tenant\Member;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 /**
  * Member management for staff (FR-MEM-1 … FR-MEM-7).
@@ -63,10 +65,29 @@ class MemberController extends Controller
         // Staff-created members still start inactive. Creating a member and
         // approving them are separate decisions, and collapsing them removes
         // the approval record the association relies on.
-        $member = Member::create($validated + [
-            'status' => Member::STATUS_INACTIVE,
-            'created_by' => $request->user()->id,
-        ]);
+        $member = DB::transaction(function () use ($validated, $request) {
+            $member = Member::create($validated + [
+                'status' => Member::STATUS_INACTIVE,
+                'created_by' => $request->user()->id,
+            ]);
+
+            /*
+             * The society record is created with the member, and empty.
+             *
+             * This mirrors the association's actual practice, which the legacy
+             * code states plainly: `forAdminRegister()` creates the associator
+             * row carrying nothing but member_id, and the number is typed in
+             * later on a screen labelled "Office use only", beside the approval
+             * date. The registration form has no number field at all.
+             *
+             * Creating the row now rather than on first assignment means the
+             * member always has a society record to attach shares and a number
+             * to - and no other code has to cope with its absence.
+             */
+            AssociatorInfo::create(['member_id' => $member->id]);
+
+            return $member;
+        });
 
         $this->audit($request, $member, 'member.created', null, $this->shape($member));
 
@@ -123,6 +144,55 @@ class MemberController extends Controller
         // FR-FINE-6: reinstatement does not forgive debt. Accrued fines stay
         // exactly where they are; only a recorded fine adjustment changes them.
         return $this->transition($request, $member, Member::STATUS_ACTIVE, 'member.reinstated', reasonRequired: true);
+    }
+
+    /**
+     * Assign or correct the society record (FR-MEM-3).
+     *
+     * Separate from `update` because it is a different act by a different
+     * person: `update` corrects the member's own details, this records what the
+     * office decided. The legacy system draws the same line - a distinct screen,
+     * distinct permission wording, and the label "Office use only".
+     *
+     * Numbers are typed, not generated. That is deliberate and matches the
+     * association's register: COCSOL's 315 live numbers run 1-317 with two gaps
+     * (221 and 245), zero-padded to at least two digits. A generator would
+     * either refuse to reproduce those gaps or silently reissue a retired
+     * number, and the register - not this system - is the authority.
+     *
+     * `num_or_shares` is deliberately NOT accepted. It is a denormalised total
+     * maintained by ShareService from share payments and recomputable from
+     * share history (FR-SHR-6); letting staff type over it would put the figure
+     * staff read permanently out of step with the ledger it is derived from.
+     * The legacy system allowed both, which is why the two disagree there.
+     */
+    public function assignAssociatorInfo(Request $request, int $member): JsonResponse
+    {
+        $record = $this->find($member);
+
+        $info = $record->associatorInfo ?? AssociatorInfo::create(['member_id' => $record->id]);
+
+        $validated = $request->validate([
+            // Unique within the association, which is all a membership number
+            // means - across associations it is meaningless, which is why
+            // members live in the tenant database.
+            'membership_no' => [
+                'required', 'string', 'max:50',
+                Rule::unique('associators_infos', 'membership_no')->ignore($info->id),
+            ],
+            'join_date' => ['sometimes', 'nullable', 'date'],
+            'share_no' => ['sometimes', 'nullable', 'string', 'max:50'],
+            'bcs_batch' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'company' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'designation' => ['sometimes', 'nullable', 'string', 'max:255'],
+        ]);
+
+        $before = $info->only(array_keys($validated));
+        $info->update($validated);
+
+        $this->audit($request, $record, 'member.associator_info_assigned', $before, $info->fresh()->only(array_keys($validated)));
+
+        return response()->json(['data' => $this->shape($record->fresh(), detailed: true)]);
     }
 
     // ---- internals -----------------------------------------------------
@@ -195,6 +265,13 @@ class MemberController extends Controller
 
         if ($detailed) {
             $data += [
+                // The society record, so the screen can show what the office has
+                // assigned and what is still outstanding.
+                'join_date' => $member->associatorInfo?->join_date?->toDateString(),
+                'share_no' => $member->associatorInfo?->share_no,
+                'company' => $member->associatorInfo?->company,
+                'designation' => $member->associatorInfo?->designation,
+
                 'father_name' => $member->father_name,
                 'mother_name' => $member->mother_name,
                 'bcs_batch' => $member->bcs_batch,

@@ -160,7 +160,7 @@ class SeedDemoData extends Command
      */
     private function memberWithMixedFines(FeeSetup $setup): void
     {
-        $member = $this->member('01711111111', 'Rahim Uddin', 'COC-0412', shares: 12);
+        $member = $this->member('01711111111', 'Rahim Uddin', '12', shares: 12);
 
         foreach (['2026-05', '2026-06', '2026-07'] as $period) {
             app(FeeAssignService::class)->assign($member->id, $setup, $period);
@@ -173,7 +173,7 @@ class SeedDemoData extends Command
     /** Paid up: exercises the empty state, which is otherwise never seen. */
     private function memberFullyPaidUp(FeeSetup $setup): void
     {
-        $member = $this->member('01722222222', 'Karim Ahmed', 'COC-0413', shares: 30);
+        $member = $this->member('01722222222', 'Karim Ahmed', '13', shares: 30);
 
         $assign = app(FeeAssignService::class)->assign($member->id, $setup, '2026-04');
 
@@ -206,7 +206,7 @@ class SeedDemoData extends Command
      */
     private function memberAwaitingApproval(FeeSetup $setup): void
     {
-        $member = $this->member('01733333333', 'Fatema Begum', 'COC-0414', shares: 8);
+        $member = $this->member('01733333333', 'Fatema Begum', '14', shares: 8);
 
         $assign = app(FeeAssignService::class)->assign($member->id, $setup, '2026-05');
         $this->accrue($member);
@@ -256,7 +256,7 @@ class SeedDemoData extends Command
     /** Suspended by the fine engine itself, not by setting a column. */
     private function memberSuspended(FeeSetup $setup): void
     {
-        $member = $this->member('01744444444', 'Nasreen Akter', 'COC-0415', shares: 4);
+        $member = $this->member('01744444444', 'Nasreen Akter', '15', shares: 4);
 
         foreach (['2026-01', '2026-02', '2026-03'] as $period) {
             app(FeeAssignService::class)->assign($member->id, $setup, $period);
@@ -274,7 +274,7 @@ class SeedDemoData extends Command
 
     private function memberInactive(): void
     {
-        $member = $this->member('01755555555', 'Jamal Hossain', 'COC-0416', shares: 0);
+        $member = $this->member('01755555555', 'Jamal Hossain', '16', shares: 0);
         $member->update(['status' => Member::STATUS_INACTIVE]);
 
         $this->line('  Jamal Hossain ........ inactive, awaiting approval');
@@ -298,6 +298,14 @@ class SeedDemoData extends Command
 
     // ---- helpers --------------------------------------------------------
 
+    /**
+     * `$membershipNo` is a plain zero-padded number on purpose.
+     *
+     * That is the association's actual register: 315 live numbers running 01 to
+     * 317, no prefix, gaps at 221 and 245 where numbers were retired. An earlier
+     * version of this seeder used "COC-0412", which was invented - convincing
+     * enough to be mistaken for the real convention by anyone reading the demo.
+     */
     private function member(string $mobile, string $name, string $membershipNo, int $shares): Member
     {
         $member = Member::firstOrCreate(

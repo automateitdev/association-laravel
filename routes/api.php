@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\V1\Staff\FeeController;
 use App\Http\Controllers\Api\V1\Staff\MemberController;
 use App\Http\Controllers\Api\V1\Staff\PaymentApprovalController;
 use App\Http\Controllers\Api\V1\Staff\ReportController;
+use App\Http\Controllers\Api\V1\Staff\SettingsController;
 use App\Http\Controllers\Api\V1\TenantLookupController;
 use Illuminate\Support\Facades\Route;
 
@@ -75,6 +76,12 @@ Route::prefix('v1')->group(function () {
             ->middleware('ability:member.dues.view');
 
         Route::get('/fees/summary', [DuesController::class, 'summary'])
+            ->middleware('ability:member.dues.view');
+
+        // Where to send the money, and whether online payment is offered at
+        // all. Without this the manual flow asks for a transfer and never says
+        // to which account.
+        Route::get('/fees/payment-instructions', [DuesController::class, 'instructions'])
             ->middleware('ability:member.dues.view');
 
         Route::get('/payments', [PaymentController::class, 'index'])
@@ -161,6 +168,17 @@ Route::prefix('v1')->group(function () {
                 ->middleware('permission:payments.view');
             Route::post('/payments/decide', [PaymentApprovalController::class, 'decide'])
                 ->middleware('permission:payments.approve');
+
+            // Association configuration. superadmin only - these change how
+            // money is calculated and where members are told to send it.
+            Route::get('/settings', [SettingsController::class, 'index'])
+                ->middleware('permission:settings.view');
+            Route::put('/settings', [SettingsController::class, 'update'])
+                ->middleware('permission:settings.edit');
+
+            // Gateway credentials are WRITE-ONLY: stored, never read back.
+            Route::put('/settings/gateway', [SettingsController::class, 'updateGateway'])
+                ->middleware('permission:settings.edit');
 
             // Reports
             Route::get('/reports/memberwise-paid', [ReportController::class, 'memberwisePaid'])

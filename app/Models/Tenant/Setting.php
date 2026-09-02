@@ -26,6 +26,32 @@ class Setting extends Model
 
     public const INVOICE_FORMAT = 'invoice.format';
 
+    /*
+     * Where a member should transfer money for a manual payment.
+     *
+     * Not decoration: with online payment optional, a member reading "pay at
+     * the bank and upload your slip" needs to be told WHICH account. Without
+     * these the manual flow is incomplete - it asks for money and does not say
+     * where to send it.
+     *
+     * Per association, because each holds its own account (A-1).
+     */
+    public const BANK_ACCOUNT_NAME = 'bank.account_name';
+
+    public const BANK_ACCOUNT_NUMBER = 'bank.account_number';
+
+    public const BANK_NAME = 'bank.bank_name';
+
+    public const BANK_BRANCH = 'bank.branch';
+
+    public const BANK_ROUTING_NUMBER = 'bank.routing_number';
+
+    /** Free text shown under the account details, e.g. a reference to quote. */
+    public const BANK_INSTRUCTIONS = 'bank.instructions';
+
+    /** Whether members may start an online payment at all. */
+    public const ONLINE_PAYMENT_ENABLED = 'payment.online_enabled';
+
     /** How long an online payment intent may sit unconfirmed (FR-PAY-8). */
     public const PAYMENT_INTENT_TTL_MINUTES = 'payment.intent_ttl_minutes';
 
@@ -49,6 +75,19 @@ class Setting extends Model
             self::SUSPENSION_THRESHOLD => ['value' => 3, 'group' => 'fine'],
             self::INVOICE_FORMAT => ['value' => 'INV-{YYYY}-{SEQ:6}', 'group' => 'invoice'],
             self::PAYMENT_INTENT_TTL_MINUTES => ['value' => 60, 'group' => 'payment'],
+
+            // Blank until the association fills them in. Deliberately seeded
+            // empty rather than omitted, so the settings screen shows the
+            // fields and their absence is visible rather than implicit.
+            self::BANK_ACCOUNT_NAME => ['value' => '', 'group' => 'bank'],
+            self::BANK_ACCOUNT_NUMBER => ['value' => '', 'group' => 'bank'],
+            self::BANK_NAME => ['value' => '', 'group' => 'bank'],
+            self::BANK_BRANCH => ['value' => '', 'group' => 'bank'],
+            self::BANK_ROUTING_NUMBER => ['value' => '', 'group' => 'bank'],
+            self::BANK_INSTRUCTIONS => ['value' => '', 'group' => 'bank'],
+
+            // Off until an association configures a gateway and turns it on.
+            self::ONLINE_PAYMENT_ENABLED => ['value' => false, 'group' => 'payment'],
         ];
     }
 

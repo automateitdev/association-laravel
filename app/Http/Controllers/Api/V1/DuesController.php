@@ -9,6 +9,7 @@ use App\Models\Tenant\FeeAssign;
 use App\Models\Tenant\Member;
 use App\Models\Tenant\PaymentInfo;
 use App\Models\Tenant\PaymentInfoItem;
+use App\Models\Tenant\Setting;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -104,6 +105,44 @@ class DuesController extends Controller
                 'instalments_paid_amount' => number_format((float) $instalmentsPaidAmount, 2, '.', ''),
                 'fines_paid_amount' => number_format((float) $finesPaidAmount, 2, '.', ''),
                 'shares' => (int) ($member->associatorInfo?->num_or_shares ?? 0),
+            ],
+        ]);
+    }
+
+    /**
+     * How the member is meant to pay.
+     *
+     * Without this the manual flow is incomplete: the app tells a member to
+     * transfer money and upload a slip, and never says WHICH account. The
+     * details are per association because each holds its own (A-1).
+     *
+     * `online_enabled` tells the app whether to offer a "Pay now" button at
+     * all, so a member is never shown a route that is not configured.
+     */
+    public function instructions(): JsonResponse
+    {
+        $bank = [
+            'account_name' => (string) Setting::get(Setting::BANK_ACCOUNT_NAME),
+            'account_number' => (string) Setting::get(Setting::BANK_ACCOUNT_NUMBER),
+            'bank_name' => (string) Setting::get(Setting::BANK_NAME),
+            'branch' => (string) Setting::get(Setting::BANK_BRANCH),
+            'routing_number' => (string) Setting::get(Setting::BANK_ROUTING_NUMBER),
+            'instructions' => (string) Setting::get(Setting::BANK_INSTRUCTIONS),
+        ];
+
+        return response()->json([
+            'data' => [
+                'manual' => [
+                    // False when the association has not filled the details in.
+                    // The app must then say "contact the office" rather than
+                    // render an empty card that looks like a loading failure.
+                    'available' => $bank['account_number'] !== '',
+                    'bank' => $bank,
+                ],
+                'online' => [
+                    'available' => (bool) Setting::get(Setting::ONLINE_PAYMENT_ENABLED),
+                    'provider' => 'spg',
+                ],
             ],
         ]);
     }

@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\V1\GatewayController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\PaymentDocumentController;
 use App\Http\Controllers\Api\V1\Staff\FeeController;
+use App\Http\Controllers\Api\V1\Staff\LedgerController;
 use App\Http\Controllers\Api\V1\Staff\MemberController;
 use App\Http\Controllers\Api\V1\Staff\PaymentApprovalController;
 use App\Http\Controllers\Api\V1\Staff\ReportController;
@@ -161,6 +162,11 @@ Route::prefix('v1')->group(function () {
                 ->middleware('permission:members.suspend');
             Route::post('/members/{member}/reinstate', [MemberController::class, 'reinstate'])
                 ->middleware('permission:members.suspend');
+
+            // The chart of accounts, so a fee head can name where its
+            // instalment and its fine income each post (FR-FEE-2).
+            Route::get('/ledgers', [LedgerController::class, 'index'])
+                ->middleware('permission:ledgers.view');
 
             // Fee heads and assignment
             Route::get('/fee-setups', [FeeController::class, 'indexSetups'])

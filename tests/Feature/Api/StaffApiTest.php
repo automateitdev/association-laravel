@@ -285,6 +285,47 @@ class StaffApiTest extends TenantTestCase
         });
     }
 
+    // ---- chart of accounts -----------------------------------------------
+
+    /**
+     * A fee head names two ledgers, so the ledgers have to be listable.
+     *
+     * Without this endpoint the fee setup screen cannot exist - it would have to
+     * ask staff to type account ids from memory.
+     */
+    public function test_the_chart_of_accounts_can_be_listed_for_choosing(): void
+    {
+        $token = $this->staffToken();
+
+        $response = $this->withHeaders($this->headers($token))
+            ->getJson('/api/v1/staff/ledgers')
+            ->assertOk();
+
+        // Group and category travel with each ledger: several account names read
+        // alike, and "Subscription Income - Income" is what disambiguates them.
+        $response->assertJsonStructure([
+            'data' => [['id', 'name', 'group', 'category', 'type']],
+        ]);
+
+        $names = collect($response->json('data'))->pluck('name');
+        self::assertTrue($names->contains('Subscription Income'));
+        self::assertTrue($names->contains('Fine Income'));
+    }
+
+    public function test_the_chart_can_be_narrowed_to_income_accounts(): void
+    {
+        $token = $this->staffToken();
+
+        $types = collect(
+            $this->withHeaders($this->headers($token))
+                ->getJson('/api/v1/staff/ledgers?type=income')
+                ->assertOk()
+                ->json('data')
+        )->pluck('type')->unique();
+
+        self::assertSame(['income'], $types->values()->all());
+    }
+
     // ---- fee heads -------------------------------------------------------
 
     /**

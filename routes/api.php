@@ -5,13 +5,17 @@ declare(strict_types=1);
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\DuesController;
 use App\Http\Controllers\Api\V1\GatewayController;
+use App\Http\Controllers\Api\V1\HealthController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\PaymentDocumentController;
+use App\Http\Controllers\Api\V1\Staff\CollectionController;
 use App\Http\Controllers\Api\V1\Staff\FeeController;
 use App\Http\Controllers\Api\V1\Staff\LedgerController;
 use App\Http\Controllers\Api\V1\Staff\MemberController;
 use App\Http\Controllers\Api\V1\Staff\PaymentApprovalController;
 use App\Http\Controllers\Api\V1\Staff\ReportController;
+use App\Http\Controllers\Api\V1\Staff\RoleController;
+use App\Http\Controllers\Api\V1\Staff\UserController;
 use App\Http\Controllers\Api\V1\Staff\SettingsController;
 use App\Http\Controllers\Api\V1\TenantLookupController;
 use Illuminate\Support\Facades\Route;
@@ -38,7 +42,11 @@ Route::prefix('v1')->group(function () {
 
     // ---- central: no association required ----------------------------
 
-    Route::get('/health', fn () => response()->json(['data' => ['status' => 'ok']]));
+    /*
+     * A health check that can actually fail. See HealthController - the version
+     * this replaces returned 200 through two real outages.
+     */
+    Route::get('/health', HealthController::class);
     Route::get('/tenants/lookup', TenantLookupController::class);
 
     /*
@@ -94,6 +102,13 @@ Route::prefix('v1')->group(function () {
         Route::get('/payments', [PaymentController::class, 'index'])
             ->middleware('ability:member.payments.view');
 
+        /*
+         * The member's own receipt. Above the {payment} route, or "invoice"
+         * is matched as a payment id.
+         */
+        Route::get('/payments/{payment}/invoice', [PaymentController::class, 'invoice'])
+            ->middleware('ability:member.payments.view');
+
         Route::get('/payments/{payment}', [PaymentController::class, 'show'])
             ->middleware('ability:member.payments.view');
 
@@ -139,6 +154,14 @@ Route::prefix('v1')->group(function () {
                 ->middleware('permission:dashboard.view');
 
             // Members
+            /*
+              * Exports sit BEFORE the /{member} route, or Laravel matches
+              * "export" as a member id and returns a 404 for a route that
+              * exists.
+              */
+            Route::get('/members/export', [MemberController::class, 'export'])
+                ->middleware(['permission:members.view', 'permission:reports.export']);
+
             Route::get('/members', [MemberController::class, 'index'])
                 ->middleware('permission:members.view');
             Route::post('/members', [MemberController::class, 'store'])
@@ -169,6 +192,9 @@ Route::prefix('v1')->group(function () {
                 ->middleware('permission:ledgers.view');
 
             // Fee heads and assignment
+            Route::get('/fee-setups/export', [FeeController::class, 'exportSetups'])
+                ->middleware(['permission:fee-setups.view', 'permission:reports.export']);
+
             Route::get('/fee-setups', [FeeController::class, 'indexSetups'])
                 ->middleware('permission:fee-setups.view');
             Route::post('/fee-setups', [FeeController::class, 'storeSetup'])
@@ -182,6 +208,9 @@ Route::prefix('v1')->group(function () {
                 ->middleware('permission:fee-assigns.create');
 
             // Payment approval
+            Route::get('/payments/pending/export', [PaymentApprovalController::class, 'exportPending'])
+                ->middleware(['permission:payments.view', 'permission:reports.export']);
+
             Route::get('/payments/pending', [PaymentApprovalController::class, 'pending'])
                 ->middleware('permission:payments.view');
             Route::post('/payments/decide', [PaymentApprovalController::class, 'decide'])
@@ -198,11 +227,73 @@ Route::prefix('v1')->group(function () {
             Route::put('/settings/gateway', [SettingsController::class, 'updateGateway'])
                 ->middleware('permission:settings.edit');
 
+            /*
+             * Taking money at the counter (FR-FEE-9).
+             *
+             * Two permissions, because looking up what a member owes and
+             * actually recording a payment against it are different acts - a
+             * clerk may be trusted with one and not the other.
+             */
+            Route::get('/members/{member}/dues', [CollectionController::class, 'dues'])
+                ->middleware('permission:collections.view');
+            Route::post('/collections', [CollectionController::class, 'store'])
+                ->middleware('permission:collections.create');
+
+            // The counter's receipt. Gated on seeing payments, not on taking
+            // them: reprinting a receipt is a lookup, not a collection.
+            Route::get('/payments/{payment}/invoice', [CollectionController::class, 'invoice'])
+                ->middleware('permission:payments.view');
+
+            /*
+             * Staff administration (FR-RBAC-1).
+             *
+             * Nothing here existed, which meant an association could not
+             * onboard its own office - the seeded account was the only way in.
+             */
+            Route::get('/users', [UserController::class, 'index'])
+                ->middleware('permission:users.view');
+            Route::post('/users', [UserController::class, 'store'])
+                ->middleware('permission:users.create');
+            Route::put('/users/{user}', [UserController::class, 'update'])
+                ->middleware('permission:users.edit');
+            Route::delete('/users/{user}', [UserController::class, 'destroy'])
+                ->middleware('permission:users.delete');
+
+            // The catalogue a role editor is built from. Gated on roles.view
+            // rather than being public: it enumerates everything this build can
+            // do, which is not something to hand out unasked.
+            Route::get('/permissions', [RoleController::class, 'permissions'])
+                ->middleware('permission:roles.view');
+
+            Route::get('/roles', [RoleController::class, 'index'])
+                ->middleware('permission:roles.view');
+            Route::post('/roles', [RoleController::class, 'store'])
+                ->middleware('permission:roles.create');
+            Route::put('/roles/{role}', [RoleController::class, 'update'])
+                ->middleware('permission:roles.edit');
+            Route::delete('/roles/{role}', [RoleController::class, 'destroy'])
+                ->middleware('permission:roles.delete');
+
             // Reports
             Route::get('/reports/memberwise-paid', [ReportController::class, 'memberwisePaid'])
                 ->middleware('permission:reports.paid');
             Route::get('/reports/due-info', [ReportController::class, 'dueInfo'])
                 ->middleware('permission:reports.due');
+
+            /*
+             * Downloads (FR-REP-7). TWO permissions each, and the pair is the
+             * point: `reports.export` alone must not open a report the account
+             * cannot already read on screen, and being allowed to read one on
+             * screen must not imply permission to walk out with the file.
+             *
+             * Listed as separate middleware entries because that is AND -
+             * `permission:a|b` is OR, which here would mean either one grants
+             * the download.
+             */
+            Route::get('/reports/memberwise-paid/export', [ReportController::class, 'exportMemberwisePaid'])
+                ->middleware(['permission:reports.paid', 'permission:reports.export']);
+            Route::get('/reports/due-info/export', [ReportController::class, 'exportDueInfo'])
+                ->middleware(['permission:reports.due', 'permission:reports.export']);
         });
     });
 });

@@ -9,9 +9,11 @@ use App\Http\Controllers\Controller;
 use App\Models\Tenant\Member;
 use App\Models\Tenant\PaymentInfo;
 use App\Services\PaymentDocumentService;
+use App\Reports\InvoiceRenderer;
 use App\Services\PaymentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
 use Illuminate\Support\Facades\DB;
 
 class PaymentController extends Controller
@@ -176,6 +178,42 @@ class PaymentController extends Controller
             ),
             default => new ApiException('PAYMENT_REFUSED', $message, 422),
         };
+    }
+
+    /**
+     * The member's own receipt (FR-PAY-14).
+     *
+     * The same document staff can produce, reachable by the person who paid.
+     * Ownership is checked exactly as it is for viewing the payment - a receipt
+     * naming somebody else's dues is a data leak wearing a letterhead.
+     */
+    public function invoice(Request $request, int $payment, InvoiceRenderer $renderer): Response
+    {
+        $member = $this->member($request);
+
+        $record = PaymentInfo::with(['member.associatorInfo', 'items.feeAssign.feeSetup', 'ledger'])
+            ->where('member_id', $member->id)
+            ->find($payment);
+
+        if (! $record) {
+            // Deliberately the same answer as "no such payment". Distinguishing
+            // them would confirm that another member's invoice id exists.
+            throw new ApiException('NOT_FOUND', 'No such payment.', 404);
+        }
+
+        if ($record->status !== PaymentInfo::STATUS_COMPLETED) {
+            throw new ApiException(
+                'PAYMENT_NOT_COMPLETED',
+                'A receipt is only available once the payment has been approved.',
+                422,
+            );
+        }
+
+        return $renderer->render(
+            $record,
+            (string) (tenant()->name ?? tenant()->getKey()),
+            (string) (tenant()->currency ?? 'BDT'),
+        );
     }
 
     private function shape(PaymentInfo $payment, bool $withItems = false): array

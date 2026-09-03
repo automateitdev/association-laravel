@@ -8,15 +8,21 @@ use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Models\Tenant\FeeAssign;
 use App\Models\Tenant\FeeSetup;
+use App\Reports\Column;
+use App\Reports\ExportsListings;
+use App\Reports\Report;
 use App\Services\FeeAssignService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
 
 /**
  * Fee heads and assignment (FR-FEE-1 … FR-FEE-9).
  */
 class FeeController extends Controller
 {
+    use ExportsListings;
+
     public function __construct(private readonly FeeAssignService $assigner) {}
 
     public function indexSetups(): JsonResponse
@@ -26,6 +32,67 @@ class FeeController extends Controller
         return response()->json([
             'data' => $setups->map(fn (FeeSetup $s) => $this->shapeSetup($s)),
         ]);
+    }
+
+    /**
+     * The fee heads as a file (FR-REP-7).
+     *
+     * BOTH LEDGERS ARE COLUMNS, for the same reason the screen shows them as a
+     * pair: a fee head whose fines post to the wrong account is invisible until
+     * someone reads the income statement months later, and by then the postings
+     * are history. A printed setup sheet is how that gets checked before it
+     * matters.
+     */
+    public function exportSetups(Request $request): Response
+    {
+        $format = $this->exportFormat($request);
+
+        $rows = FeeSetup::query()
+            ->with(['ledger:id,name', 'fineLedger:id,name'])
+            ->orderBy('fee_head')
+            ->get()
+            ->map(fn (FeeSetup $s) => [
+                'fee_head' => $s->fee_head,
+                'amount' => $this->money($s->amount),
+                'monthly' => $s->monthly ? 'Monthly' : 'One-off',
+                'is_share' => $s->is_share ? 'Yes' : 'No',
+                'ledger' => $s->ledger?->name ?? '',
+                'fine_ledger' => $s->fineLedger?->name ?? '',
+                'is_active' => $s->is_active ? 'In use' : 'Deactivated',
+            ])
+            ->all();
+
+        if (($tooLarge = $this->rejectIfTooLarge($rows)) !== null) {
+            return $tooLarge;
+        }
+
+        return $this->sendExport(
+            new Report(
+                title: 'Fee heads',
+                association: $this->associationName(),
+                columns: [
+                    new Column('fee_head', 'Fee head'),
+                    new Column('amount', 'Amount', Column::TYPE_MONEY),
+                    new Column('monthly', 'Frequency'),
+                    new Column('is_share', 'Buys shares'),
+                    new Column('ledger', 'Instalment account'),
+                    new Column('fine_ledger', 'Fine account'),
+                    new Column('is_active', 'Status'),
+                ],
+                rows: $rows,
+                /*
+                 * No total on the amount column, deliberately.
+                 *
+                 * Summing the amounts of every fee head produces a number that
+                 * looks like money and means nothing - nobody is charged the
+                 * sum of all fee heads. FR-REP-8 asks for totals on summable
+                 * columns; this one is not summable in any useful sense.
+                 */
+                filters: [],
+                currency: $this->currency(),
+            ),
+            $format,
+        );
     }
 
     public function storeSetup(Request $request): JsonResponse

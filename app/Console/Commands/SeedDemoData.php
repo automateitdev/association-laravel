@@ -67,6 +67,18 @@ class SeedDemoData extends Command
     /** Fixed, so figures are identical whenever the seeder runs. */
     private const AS_OF = '2026-06-20';
 
+    /**
+     * Enough members that a REPORT behaves like a report.
+     *
+     * The five named members above each demonstrate one state, which is what
+     * makes them useful. They are useless for the report screens: five rows
+     * cannot show pagination, cannot show a sort doing anything, and make an
+     * export look like a toy. Checking those needs a population, and 40 is
+     * enough to fill two pages at the table's default of 25 without making the
+     * seeder slow.
+     */
+    private const REPORT_MEMBERS = 40;
+
     private const DEMO_PASSWORD = 'password123';
 
     public function handle(): int
@@ -103,6 +115,7 @@ class SeedDemoData extends Command
             $this->memberSuspended($setup);
             $this->memberInactive();
             $this->staffAccount();
+            $this->reportPopulation($setup);
         });
 
         $this->newLine();
@@ -115,6 +128,9 @@ class SeedDemoData extends Command
         $this->line('  01744444444  Nasreen Akter   suspended (arrears)');
         $this->line('  01755555555  Jamal Hossain   inactive (awaiting approval)');
         $this->line('  admin@demo.test             staff, superadmin');
+        $this->newLine();
+        $this->line('  plus '.self::REPORT_MEMBERS.' further members carrying dues, so the reports');
+        $this->line('  have enough rows to page, sort and export meaningfully.');
 
         return self::SUCCESS;
     }
@@ -306,12 +322,96 @@ class SeedDemoData extends Command
      * version of this seeder used "COC-0412", which was invented - convincing
      * enough to be mistaken for the real convention by anyone reading the demo.
      */
+    /**
+     * A body of ordinary members carrying dues.
+     *
+     * Deliberately VARIED rather than uniform: the number of unpaid months
+     * differs, and only some carry a fine. Forty identical rows would let a
+     * broken sort or a mis-keyed column look perfectly correct - every value
+     * being the same is the one case where getting the order wrong is
+     * invisible.
+     *
+     * Mobile numbers start 019 so they cannot collide with the five named
+     * members above, whose numbers all start 017.
+     */
+    private function reportPopulation(FeeSetup $setup): void
+    {
+        $given = ['Rahim', 'Karim', 'Fatema', 'Nasreen', 'Jamal', 'Aleya', 'Babul', 'Shirin',
+                  'Rafiq', 'Sultana', 'Mizanur', 'Hasina', 'Kamal', 'Rokeya', 'Anwar', 'Momena',
+                  'Selim', 'Parvin', 'Jahangir', 'Nazma'];
+        $family = ['Uddin', 'Ahmed', 'Begum', 'Akter', 'Hossain', 'Khatun', 'Mia', 'Rahman',
+                   'Islam', 'Chowdhury'];
+
+        $created = 0;
+
+        for ($i = 0; $i < self::REPORT_MEMBERS; $i++) {
+            $mobile = '019'.str_pad((string) (1000000 + $i), 8, '0', STR_PAD_LEFT);
+
+            $member = $this->member(
+                $mobile,
+                $given[$i % count($given)].' '.$family[intdiv($i, 7) % count($family)],
+                (string) (100 + $i),
+                ($i % 9) + 1,
+            );
+
+            /*
+             * Idempotency hangs on the ASSIGNMENTS, not on the member.
+             *
+             * The first version asked whether the member existed and skipped
+             * the whole iteration if so, which meant a member restored from the
+             * bin kept whatever dues they had - or none. Asking whether this
+             * member already has dues is the question that actually matters:
+             * it is what stops a re-run stacking a second year of instalments
+             * on everybody.
+             */
+            if (FeeAssign::where('member_id', $member->id)->exists()) {
+                continue;
+            }
+
+            foreach (range(1, 1 + ($i % 5)) as $month) {
+                $assign = app(FeeAssignService::class)->assign(
+                    $member->id,
+                    $setup,
+                    sprintf('2026-%02d', $month),
+                );
+
+                // Roughly a third carry a fine, at differing amounts - enough
+                // for the fine column to be worth sorting and for the fine
+                // total to be a number nobody could mistake for the instalment
+                // total.
+                if ($i % 3 === 0) {
+                    $assign->update([
+                        'fine_amount' => number_format(50 * (($i % 4) + 1), 2, '.', ''),
+                    ]);
+                }
+            }
+
+            $created++;
+        }
+
+        $this->line("  {$created} further members with dues .. seeded");
+    }
+
     private function member(string $mobile, string $name, string $membershipNo, int $shares): Member
     {
-        $member = Member::firstOrCreate(
+        /*
+         * withTrashed, and it is not defensive padding.
+         *
+         * Member soft-deletes. A deleted row keeps its place in the UNIQUE
+         * index on `mobile`, so the ordinary query finds nothing, firstOrCreate
+         * tries to insert, and the command dies on a duplicate-key error
+         * against a member it cannot see. Seeding a demo tenant where someone
+         * had deleted a member - exactly the thing a demo tenant is for trying
+         * out - failed with a database exception and no explanation.
+         */
+        $member = Member::withTrashed()->firstOrCreate(
             ['mobile' => $mobile],
             ['name' => $name, 'status' => Member::STATUS_ACTIVE, 'password' => self::DEMO_PASSWORD],
         );
+
+        if ($member->trashed()) {
+            $member->restore();
+        }
 
         // Re-running the seeder must restore a member edited by hand during
         // development, not leave them in whatever state the last test left.

@@ -9,29 +9,42 @@ use App\Http\Controllers\Controller;
 use App\Models\Tenant\AssociatorInfo;
 use App\Models\Tenant\AuditLog;
 use App\Models\Tenant\Member;
+use App\Reports\Column;
+use App\Reports\ExportsListings;
+use App\Reports\Report;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Validation\Rule;
+use Symfony\Component\HttpFoundation\Response;
 
 /**
  * Member management for staff (FR-MEM-1 … FR-MEM-7).
  */
 class MemberController extends Controller
 {
+    use ExportsListings;
+
+    /**
+     * Columns a caller may order by, and where each one actually lives.
+     *
+     * A whitelist rather than the raw parameter: `?sort=` reaching orderBy
+     * unchecked is an injection point, and a column name that merely does not
+     * exist is a 500 where a validation error belongs.
+     */
+    private const SORTABLE = [
+        'name' => 'members.name',
+        'mobile' => 'members.mobile',
+        'status' => 'members.status',
+        'membership_no' => 'associators_infos.membership_no',
+        'shares' => 'associators_infos.num_or_shares',
+        'added' => 'members.created_at',
+    ];
+
     public function index(Request $request): JsonResponse
     {
-        $members = Member::query()
-            ->with('associatorInfo:id,member_id,membership_no,num_or_shares')
-            ->when($request->query('status'), fn ($q, $s) => $q->where('status', $s))
-            ->when($request->query('q'), function ($q, $term) {
-                $q->where(function ($inner) use ($term) {
-                    $inner->where('name', 'like', "%{$term}%")
-                        ->orWhere('mobile', 'like', "%{$term}%")
-                        ->orWhere('email', 'like', "%{$term}%");
-                });
-            })
-            ->orderBy('name')
+        $members = $this->listing($request)
             ->paginate(min((int) $request->query('per_page', 25), 100));
 
         return response()->json([
@@ -43,6 +56,150 @@ class MemberController extends Controller
                 'last_page' => $members->lastPage(),
             ],
         ]);
+    }
+
+    /**
+     * The same list, as a file (FR-REP-7).
+     *
+     * Takes the SAME filters as the screen and deliberately ignores its
+     * pagination: a download of page 2 of the members list is not a thing
+     * anybody wants. What you filtered is what you get, all of it.
+     */
+    public function export(Request $request): Response
+    {
+        $format = $this->exportFormat($request);
+        $filters = $this->filters($request);
+
+        $rows = $this->listing($request)
+            ->get()
+            ->map(function (Member $m) {
+                $shaped = $this->shape($m);
+
+                return [
+                    'membership_no' => $shaped['membership_no'] ?? '',
+                    'name' => $shaped['name'],
+                    'mobile' => $shaped['mobile'],
+                    'email' => $shaped['email'] ?? '',
+                    'status' => $shaped['status'],
+                    'shares' => $shaped['shares'],
+                    'added' => $m->created_at?->toDateString() ?? '',
+                ];
+            })
+            ->all();
+
+        if (($tooLarge = $this->rejectIfTooLarge($rows)) !== null) {
+            return $tooLarge;
+        }
+
+        return $this->sendExport(
+            new Report(
+                title: 'Members',
+                association: $this->associationName(),
+                columns: [
+                    new Column('membership_no', 'Membership no'),
+                    new Column('name', 'Name'),
+                    new Column('mobile', 'Mobile'),
+                    new Column('email', 'Email'),
+                    new Column('status', 'Status'),
+                    /*
+                     * Shares are a COUNT, not money. Formatting them as
+                     * currency would put a number in the same shape as an
+                     * amount and invite someone to add the two together.
+                     */
+                    new Column('shares', 'Shares', Column::TYPE_INTEGER),
+                    new Column('added', 'Added'),
+                ],
+                rows: $rows,
+                filters: array_filter([
+                    'Status' => $filters['status'] === null ? 'All' : ucfirst($filters['status']),
+                    'Search' => $filters['q'],
+                    'Added' => $this->describePeriod($filters['from'], $filters['to'], 'Any date'),
+                ]),
+                currency: $this->currency(),
+            ),
+            $format,
+        );
+    }
+
+    /**
+     * The members list as the screen and the download both see it.
+     *
+     * One builder, so a filter that narrows the screen cannot fail to narrow
+     * the file - the same reason the reports were built around a single query.
+     */
+    private function listing(Request $request): Builder
+    {
+        $filters = $this->filters($request);
+        $sort = $this->sortFrom($request, self::SORTABLE);
+
+        $query = Member::query()
+            // Qualified, because the sort below may join another table and an
+            // unqualified `name` would then be ambiguous.
+            ->select('members.*')
+            ->with('associatorInfo:id,member_id,membership_no,num_or_shares')
+            ->when($filters['status'], fn ($q, $s) => $q->where('members.status', $s))
+            /*
+             * The membership number is searchable, and it is the field staff
+             * reach for first.
+             *
+             * It lives on associators_infos rather than on members, so it needs
+             * a subquery - the join cannot simply be added here, because this
+             * builder is also used with a leftJoin for sorting and joining the
+             * same table twice is an error rather than a duplicate.
+             */
+            ->when($filters['q'], function ($q, $term) {
+                $q->where(function ($inner) use ($term) {
+                    $inner->where('members.name', 'like', "%{$term}%")
+                        ->orWhere('members.mobile', 'like', "%{$term}%")
+                        ->orWhere('members.email', 'like', "%{$term}%")
+                        ->orWhereExists(function ($exists) use ($term) {
+                            $exists->selectRaw('1')
+                                ->from('associators_infos')
+                                ->whereColumn('associators_infos.member_id', 'members.id')
+                                ->where('associators_infos.membership_no', 'like', "%{$term}%");
+                        });
+                });
+            })
+            /*
+             * The date range is on `created_at` - when the office added this
+             * member - and NOT on the society join date.
+             *
+             * join_date exists on associators_infos and would be the more
+             * meaningful answer, but nothing populates it yet: neither staff
+             * member creation nor the demo seeder sets one. A filter that
+             * silently returns nothing because its column is empty is worse
+             * than one answering a slightly narrower question.
+             */
+            ->when($filters['from'], fn ($q, $d) => $q->whereDate('members.created_at', '>=', $d))
+            ->when($filters['to'], fn ($q, $d) => $q->whereDate('members.created_at', '<=', $d));
+
+        if ($sort !== null && str_starts_with($sort['column'], 'associators_infos.')) {
+            // LEFT, not inner: a member with no society record yet must still
+            // appear in the list, ordered last rather than missing entirely.
+            $query->leftJoin('associators_infos', 'associators_infos.member_id', '=', 'members.id');
+        }
+
+        return $sort === null
+            ? $query->orderBy('members.name')
+            : $query->orderBy($sort['column'], $sort['direction']);
+    }
+
+    /** @return array{status: ?string, q: ?string, from: ?string, to: ?string} */
+    private function filters(Request $request): array
+    {
+        $validated = $request->validate([
+            'status' => ['nullable', 'in:active,inactive,suspended'],
+            'q' => ['nullable', 'string', 'max:255'],
+            'from' => ['nullable', 'date'],
+            'to' => ['nullable', 'date', 'after_or_equal:from'],
+        ]);
+
+        return [
+            'status' => $validated['status'] ?? null,
+            'q' => $validated['q'] ?? null,
+            'from' => $validated['from'] ?? null,
+            'to' => $validated['to'] ?? null,
+        ];
     }
 
     public function store(Request $request): JsonResponse

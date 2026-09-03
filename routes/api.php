@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\V1\GatewayController;
 use App\Http\Controllers\Api\V1\HealthController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\PaymentDocumentController;
+use App\Http\Controllers\Api\V1\Staff\AuditController;
 use App\Http\Controllers\Api\V1\Staff\CollectionController;
 use App\Http\Controllers\Api\V1\Staff\FeeController;
 use App\Http\Controllers\Api\V1\Staff\LedgerController;
@@ -281,6 +282,14 @@ Route::prefix('v1')->group(function () {
                 ->middleware('permission:reports.due');
 
             /*
+             * FR-REP-6. Deliberately its own permission: this report names
+             * members whose figures are wrong, which is not the same audience
+             * as the reports staff read every day.
+             */
+            Route::get('/reports/inconsistencies', [AuditController::class, 'index'])
+                ->middleware('permission:reports.inconsistency');
+
+            /*
              * Downloads (FR-REP-7). TWO permissions each, and the pair is the
              * point: `reports.export` alone must not open a report the account
              * cannot already read on screen, and being allowed to read one on
@@ -294,6 +303,8 @@ Route::prefix('v1')->group(function () {
                 ->middleware(['permission:reports.paid', 'permission:reports.export']);
             Route::get('/reports/due-info/export', [ReportController::class, 'exportDueInfo'])
                 ->middleware(['permission:reports.due', 'permission:reports.export']);
+            Route::get('/reports/inconsistencies/export', [AuditController::class, 'export'])
+                ->middleware(['permission:reports.inconsistency', 'permission:reports.export']);
         });
     });
 });

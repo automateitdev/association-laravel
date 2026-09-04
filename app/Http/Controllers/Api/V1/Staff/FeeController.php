@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api\V1\Staff;
 
 use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
+use App\Models\Tenant\AuditLog;
 use App\Models\Tenant\FeeAssign;
 use App\Models\Tenant\FeeSetup;
 use App\Reports\Column;
@@ -14,6 +15,7 @@ use App\Reports\Report;
 use App\Services\FeeAssignService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -143,6 +145,18 @@ class FeeController extends Controller
             ->when($request->query('member_id'), fn ($q, $id) => $q->where('member_id', $id))
             ->when($request->query('period'), fn ($q, $p) => $q->where('period', $p))
             ->when($request->query('status'), fn ($q, $s) => $q->where('status', $s))
+
+            /*
+             * Only instalments carrying a fine. The fine adjustment screen
+             * filtered these out client-side at first, which made the count
+             * line lie - "Showing 1-25 of 121" above nine visible rows, because
+             * the total came from the server and the rows did not. A filter the
+             * server does not know about cannot be paginated honestly.
+             */
+            ->when(
+                filter_var($request->query('fined', 'false'), FILTER_VALIDATE_BOOL),
+                fn ($q) => $q->where('fine_amount', '>', 0)
+            )
             ->orderByDesc('period')
             ->paginate(min((int) $request->query('per_page', 25), 100));
 
@@ -232,5 +246,96 @@ class FeeController extends Controller
             // account is invisible until someone reads the income statement.
             'fine_ledger' => ['id' => $setup->fine_ledger_id, 'name' => $setup->fineLedger?->name],
         ];
+    }
+
+    /**
+     * Change the fine on an outstanding instalment (FR-FEE-9).
+     *
+     * WHY THIS REFUSES TO TOUCH A PAID INSTALMENT
+     * -------------------------------------------
+     * The legacy screen adjusted a fine wherever it found one - including on
+     * instalments already settled - by rewriting `fine_amount` on the
+     * assignment AND on the payment items behind it, then recomputing the
+     * payment header. That edits the record of money that has already changed
+     * hands. It does not refund anybody; it just makes the invoice, the ledger
+     * and the member's receipt disagree about what was paid, and the audit
+     * (FR-REP-6) would flag every one of them as TOTAL_MISMATCH the same day.
+     *
+     * A fine that was wrongly charged AND already collected is a refund, not an
+     * edit. There is no refund flow yet, so this endpoint refuses that case
+     * loudly rather than quietly corrupting the books, and says why.
+     *
+     * Waiving a fine before it is paid is the operation staff actually reach
+     * for, and that is what this does.
+     */
+    public function adjustFine(Request $request, int $feeAssign): JsonResponse
+    {
+        $validated = $request->validate([
+            'fine_amount' => ['required', 'numeric', 'min:0'],
+
+            /*
+             * Required, not optional. A fine is a member-visible figure and
+             * this is the one place staff can change it by hand - "who reduced
+             * my fine, and why" has to have an answer that is not "somebody,
+             * at some point".
+             */
+            'reason' => ['required', 'string', 'min:3', 'max:500'],
+        ]);
+
+        $assign = FeeAssign::with('feeSetup:id,fee_head')->findOrFail($feeAssign);
+
+        if ($assign->status === FeeAssign::STATUS_PAID) {
+            throw new ApiException(
+                'FINE_ALREADY_PAID',
+                'This instalment has been paid, so its fine cannot be edited. Changing it now '
+                    . 'would alter the record of money already received without refunding it.',
+                422,
+            );
+        }
+
+        $before = (string) $assign->fine_amount;
+        $after = number_format((float) $validated['fine_amount'], 2, '.', '');
+
+        if (bccomp($before, $after, 2) === 0) {
+            throw new ApiException(
+                'FINE_UNCHANGED',
+                'That is the fine already recorded, so there is nothing to change.',
+                422,
+            );
+        }
+
+        DB::transaction(function () use ($assign, $after, $before, $validated, $request) {
+            $assign->update(['fine_amount' => $after]);
+
+            AuditLog::create([
+                'actor_type' => $request->user()::class,
+                'actor_id' => $request->user()->id,
+                'subject_type' => FeeAssign::class,
+                'subject_id' => $assign->id,
+                'action' => 'fee-assign.fine-adjusted',
+                'before' => ['fine_amount' => $before],
+                'after' => ['fine_amount' => $after],
+                'reason' => $validated['reason'],
+                'ip' => $request->ip(),
+            ]);
+        });
+
+        $assign->refresh();
+
+        return response()->json([
+            'data' => [
+                'fee_assign_id' => $assign->id,
+                'member_id' => $assign->member_id,
+                'fee_head' => $assign->feeSetup->fee_head,
+                'period' => $assign->period,
+                'instalment_amount' => (string) $assign->amount,
+                'fine_amount' => (string) $assign->fine_amount,
+                'total_due' => $assign->totalDue(),
+                'status' => $assign->status,
+            ],
+            'meta' => [
+                'previous_fine_amount' => $before,
+            ],
+        ]);
     }
 }

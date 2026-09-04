@@ -443,4 +443,114 @@ class MemberController extends Controller
 
         return $data;
     }
+
+    /**
+     * The membership register: the office record for every member.
+     *
+     * The legacy system had a whole screen for this (`admin.associators-info.*`)
+     * and it earns its place - the register answers a different question from
+     * the member list. "Who is member 114, when did they join, and which batch
+     * were they in" is record-keeping; the member list is about who owes what.
+     *
+     * `num_or_shares` is reported but NOT editable anywhere, here or on the
+     * assignment endpoint. It is derived from completed payments and share
+     * transfers, and hand-editing it is exactly how the legacy system ended up
+     * with six members holding shares nobody had bought (D-19).
+     */
+    public function associatorInfos(Request $request): JsonResponse
+    {
+        $rows = $this->registerQuery($request)
+            ->paginate(min((int) $request->query('per_page', 25), 100));
+
+        return response()->json([
+            'data' => $rows->getCollection()->map(fn ($r) => $this->shapeRegister($r)),
+            'meta' => [
+                'current_page' => $rows->currentPage(),
+                'total' => $rows->total(),
+                'last_page' => $rows->lastPage(),
+                'per_page' => $rows->perPage(),
+            ],
+        ]);
+    }
+
+    public function exportAssociatorInfos(Request $request): Response
+    {
+        $format = $this->exportFormat($request);
+
+        $rows = $this->registerQuery($request)
+            ->get()
+            ->map(fn ($r) => $this->shapeRegister($r))
+            ->all();
+
+        if (($tooLarge = $this->rejectIfTooLarge($rows)) !== null) {
+            return $tooLarge;
+        }
+
+        return $this->sendExport(
+            new Report(
+                title: 'Membership register',
+                association: $this->associationName(),
+                columns: [
+                    new Column('membership_no', 'Member no.'),
+                    new Column('name', 'Name'),
+                    new Column('join_date', 'Joined'),
+                    new Column('share_no', 'Share no.'),
+                    new Column('shares', 'Shares', Column::TYPE_INTEGER),
+                    new Column('bcs_batch', 'Batch'),
+                    new Column('company', 'Company'),
+                    new Column('designation', 'Designation'),
+                    new Column('status', 'Status'),
+                ],
+                rows: $rows,
+                filters: array_filter(['Member' => $request->query('q')]),
+                currency: $this->currency(),
+            ),
+            $format,
+        );
+    }
+
+    /** One query feeding both the screen and its download, so they cannot differ. */
+    private function registerQuery(Request $request)
+    {
+        return DB::table('associators_infos as ai')
+            ->join('members as m', 'm.id', '=', 'ai.member_id')
+            ->when($request->query('q'), function ($q, $term) {
+                $q->where(function ($inner) use ($term) {
+                    $inner->where('m.name', 'like', "%{$term}%")
+                        ->orWhere('ai.membership_no', 'like', "%{$term}%");
+                });
+            })
+            ->orderBy('ai.membership_no')
+            ->select([
+                'ai.id',
+                'ai.member_id',
+                'ai.membership_no',
+                'ai.join_date',
+                'ai.share_no',
+                'ai.num_or_shares',
+                'ai.bcs_batch',
+                'ai.company',
+                'ai.designation',
+                'm.name',
+                'm.status',
+            ]);
+    }
+
+    /** @return array<string, string|int|null> */
+    private function shapeRegister(object $r): array
+    {
+        return [
+            'id' => (int) $r->id,
+            'member_id' => (int) $r->member_id,
+            'membership_no' => $r->membership_no,
+            'name' => $r->name,
+            'join_date' => $r->join_date,
+            'share_no' => $r->share_no ?? '',
+            'shares' => (int) $r->num_or_shares,
+            'bcs_batch' => $r->bcs_batch ?? '',
+            'company' => $r->company ?? '',
+            'designation' => $r->designation ?? '',
+            'status' => $r->status,
+        ];
+    }
 }

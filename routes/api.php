@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\V1\Staff\CollectionController;
 use App\Http\Controllers\Api\V1\Staff\FeeController;
 use App\Http\Controllers\Api\V1\Staff\LedgerController;
 use App\Http\Controllers\Api\V1\Staff\MemberController;
+use App\Http\Controllers\Api\V1\Staff\NomineeController;
 use App\Http\Controllers\Api\V1\Staff\PaymentApprovalController;
 use App\Http\Controllers\Api\V1\Staff\ReportController;
 use App\Http\Controllers\Api\V1\Staff\RoleController;
@@ -173,10 +174,41 @@ Route::prefix('v1')->group(function () {
                 ->middleware('permission:members.edit');
 
             // The society record: number, join date, share number, employer.
-            // Gated on members.edit rather than members.approve - assigning a
-            // number is office record-keeping, not the decision to admit.
+            /*
+             * Its own permission rather than members.edit.
+             *
+             * The catalogue has always declared associator.view/edit; this
+             * route was gated on members.edit only because nothing else used
+             * them yet. Assigning a membership number is office record-keeping,
+             * and an association may reasonably let somebody edit a member's
+             * contact details without letting them renumber the register.
+             *
+             * Safe to narrow: both seeded roles that hold members.edit
+             * (superadmin, admin) also hold associator.edit.
+             */
+            Route::get('/associator-infos/export', [MemberController::class, 'exportAssociatorInfos'])
+                ->middleware(['permission:associator.view', 'permission:reports.export']);
+
+            Route::get('/associator-infos', [MemberController::class, 'associatorInfos'])
+                ->middleware('permission:associator.view');
+
             Route::put('/members/{member}/associator-info', [MemberController::class, 'assignAssociatorInfo'])
-                ->middleware('permission:members.edit');
+                ->middleware('permission:associator.edit');
+
+            /*
+             * Nominees (FR-MEM-9). One permission covers reading and writing:
+             * an association that lets somebody see who a member nominated has
+             * no reason to stop them correcting it, and splitting the two would
+             * be a distinction nobody asked for.
+             */
+            Route::get('/members/{member}/nominees', [NomineeController::class, 'index'])
+                ->middleware('permission:nominees.manage');
+            Route::post('/members/{member}/nominees', [NomineeController::class, 'store'])
+                ->middleware('permission:nominees.manage');
+            Route::put('/nominees/{nominee}', [NomineeController::class, 'update'])
+                ->middleware('permission:nominees.manage');
+            Route::delete('/nominees/{nominee}', [NomineeController::class, 'destroy'])
+                ->middleware('permission:nominees.manage');
 
             Route::post('/members/{member}/approve', [MemberController::class, 'approve'])
                 ->middleware('permission:members.approve');
@@ -191,6 +223,19 @@ Route::prefix('v1')->group(function () {
             // instalment and its fine income each post (FR-FEE-2).
             Route::get('/ledgers', [LedgerController::class, 'index'])
                 ->middleware('permission:ledgers.view');
+
+            /*
+             * Groups are read with ledgers.view rather than ledgers.create:
+             * the create FORM needs them, but so does anyone reading the chart
+             * and wondering what a ledger is filed under.
+             */
+            Route::get('/account-groups', [LedgerController::class, 'groups'])
+                ->middleware('permission:ledgers.view');
+
+            Route::post('/ledgers', [LedgerController::class, 'store'])
+                ->middleware('permission:ledgers.create');
+            Route::put('/ledgers/{ledger}', [LedgerController::class, 'update'])
+                ->middleware('permission:ledgers.edit');
 
             // Fee heads and assignment
             Route::get('/fee-setups/export', [FeeController::class, 'exportSetups'])
@@ -207,6 +252,14 @@ Route::prefix('v1')->group(function () {
                 ->middleware('permission:fee-assigns.view');
             Route::post('/fee-assigns', [FeeController::class, 'storeAssigns'])
                 ->middleware('permission:fee-assigns.create');
+
+            /*
+             * Its own permission, not fee-assigns.edit: waiving a fine changes
+             * what a member owes, and an association may well want the person
+             * who assigns fees not to be the person who can forgive them.
+             */
+            Route::post('/fee-assigns/{feeAssign}/fine-adjustment', [FeeController::class, 'adjustFine'])
+                ->middleware('permission:fines.adjust');
 
             // Payment approval
             Route::get('/payments/pending/export', [PaymentApprovalController::class, 'exportPending'])

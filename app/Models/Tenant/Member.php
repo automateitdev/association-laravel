@@ -53,6 +53,11 @@ class Member extends Authenticatable
         return $this->hasOne(AssociatorInfo::class);
     }
 
+    public function nominees(): HasMany
+    {
+        return $this->hasMany(Nominee::class);
+    }
+
     public function feeAssigns(): HasMany
     {
         return $this->hasMany(FeeAssign::class);

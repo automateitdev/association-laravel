@@ -62,7 +62,13 @@
                         <span class="muted">—</span>
                     @endif
                 </td>
-                {{-- The email is stored on the row, so it survives the account being removed. --}}
+                {{--
+                  The email is stored on the row, so it survives the account
+                  being removed - and on a failed login it is the email TRIED,
+                  which may never have been an operator at all. That is the
+                  pattern worth seeing, so it is shown rather than hidden
+                  behind "system".
+                --}}
                 <td>{{ $entry->operator_email ?? 'system' }}</td>
                 <td>{{ $entry->source }}</td>
                 <td>{{ $entry->reason ?? '—' }}</td>

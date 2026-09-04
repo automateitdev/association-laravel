@@ -79,12 +79,21 @@ class OperatorAuditLog extends Model
         string $source = 'web',
         ?Operator $operator = null,
         ?string $ip = null,
+        ?string $operatorEmail = null,
     ): self {
         $actor = $operator ?? Auth::guard('operator')->user();
 
         return self::create([
             'operator_id' => $actor?->id,
-            'operator_email' => $actor?->email,
+
+            /*
+             * `$operatorEmail` wins when given, because the entries that most
+             * need a name are exactly the ones with nobody signed in: an
+             * account created at the server console, and a FAILED login, where
+             * the email tried is the whole point of the record. Reading it only
+             * from the session left both showing as "system".
+             */
+            'operator_email' => $operatorEmail ?? $actor?->email,
             'action' => $action,
             'tenant_id' => $tenantId,
             'before' => $before,

@@ -56,6 +56,7 @@ class SessionController extends Controller
                 action: 'operator.login_throttled',
                 after: ['email' => $validated['email']],
                 source: 'web',
+                operatorEmail: $validated['email'],
             );
 
             throw ValidationException::withMessages([
@@ -76,6 +77,7 @@ class SessionController extends Controller
                 action: 'operator.login_failed',
                 after: ['email' => $validated['email']],
                 source: 'web',
+                operatorEmail: $validated['email'],
             );
 
             throw ValidationException::withMessages([

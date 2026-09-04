@@ -144,6 +144,25 @@ class PlatformConsoleTest extends TestCase
         $this->assertDatabaseHas('operator_audit_logs', ['action' => 'operator.login_failed']);
     }
 
+    /**
+     * The email column exists so an entry still names somebody after the
+     * account is gone - and the entries that need it most are the ones with
+     * NOBODY signed in. Reading it only from the session left a failed login,
+     * where the email tried is the entire point, recorded as "system".
+     */
+    public function test_a_failed_sign_in_records_the_email_that_was_tried(): void
+    {
+        $this->post('/platform/login', [
+            'email' => 'nobody@platform.test',
+            'password' => 'wrong',
+        ])->assertSessionHasErrors('email');
+
+        $this->assertDatabaseHas('operator_audit_logs', [
+            'action' => 'operator.login_failed',
+            'operator_email' => 'nobody@platform.test',
+        ]);
+    }
+
     public function test_the_console_is_closed_to_anybody_not_signed_in(): void
     {
         $this->get('/platform')->assertRedirect('/platform/login');

@@ -90,6 +90,7 @@ class OperatorCreate extends Command
             after: ['email' => $operator->email, 'name' => $operator->name],
             reason: 'Created at the server console.',
             source: 'console',
+            operatorEmail: $operator->email,
         );
 
         $this->info("Operator [{$email}] created.");
@@ -120,6 +121,7 @@ class OperatorCreate extends Command
             after: ['is_active' => false, 'email' => $email],
             reason: 'Disabled at the server console.',
             source: 'console',
+            operatorEmail: $email,
         );
 
         $this->info("Operator [{$email}] disabled. Their audit entries are kept.");

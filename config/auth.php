@@ -42,6 +42,19 @@ return [
             'driver' => 'session',
             'provider' => 'users',
         ],
+
+        /*
+         * The platform console (FR-PLT-1..5).
+         *
+         * A separate guard, not a role on `web`: an operator is not a member of
+         * any association and must never be resolvable through the tenant API.
+         * Session-based because the console is server-rendered - the mobile app
+         * has no operator surface and should not grow one.
+         */
+        'operator' => [
+            'driver' => 'session',
+            'provider' => 'operators',
+        ],
     ],
 
     /*
@@ -65,6 +78,11 @@ return [
         'users' => [
             'driver' => 'eloquent',
             'model' => env('AUTH_MODEL', User::class),
+        ],
+
+        'operators' => [
+            'driver' => 'eloquent',
+            'model' => App\Models\Operator::class,
         ],
 
         // 'users' => [

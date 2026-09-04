@@ -6,6 +6,7 @@ namespace App\Console\Commands;
 
 use App\Models\Tenant;
 use App\Models\Tenant\AuditLog;
+use App\Models\OperatorAuditLog;
 use App\Models\Tenant\GatewayCredential;
 use App\Services\Gateways\SonaliPaymentGateway;
 use Illuminate\Console\Command;
@@ -210,5 +211,19 @@ class TenantGateway extends Command
             'after' => $after,
             'reason' => 'Set by the platform operator from the server console.',
         ]);
+
+        /*
+         * And in the OPERATOR's log as well (FR-PLT-4). The two records answer
+         * different questions: the association's says their gateway changed,
+         * the platform's says which operator changed it and from where. Only
+         * the second one is any use in an incident.
+         */
+        OperatorAuditLog::record(
+            action: $action,
+            tenantId: $tenant->getKey(),
+            after: $after,
+            reason: 'Set at the server console.',
+            source: 'console',
+        );
     }
 }

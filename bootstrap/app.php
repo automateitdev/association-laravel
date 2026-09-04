@@ -16,6 +16,11 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
         web: __DIR__.'/../routes/web.php',
+        then: function (): void {
+            // The operator console. Web middleware (sessions, CSRF), no tenant.
+            Illuminate\Support\Facades\Route::middleware([])
+                ->group(__DIR__.'/../routes/platform.php');
+        },
         api: __DIR__.'/../routes/api.php',
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
@@ -35,7 +40,52 @@ return Application::configure(basePath: dirname(__DIR__))
             // a snapshot taken at login; this is the authority.
             'permission' => Spatie\Permission\Middleware\PermissionMiddleware::class,
             'role' => Spatie\Permission\Middleware\RoleMiddleware::class,
+
         ]);
+
+        /*
+         * The console's kill switch is GROUP middleware, for the same reason
+         * ResolveTenant is (see below): `Authenticate` sits in Laravel's
+         * middleware priority list and custom route middleware does not, so
+         * declaring this as an alias let auth sort ahead of it - and a
+         * disabled console answered a redirect to a login page instead of the
+         * 404 that hides whether it exists at all.
+         *
+         * Group middleware always runs before route middleware, which is the
+         * ordering this needs.
+         */
+        $middleware->appendToGroup('platform', [
+            App\Http\Middleware\PlatformConsole::class,
+        ]);
+
+        /*
+         * ...and placed BEFORE Authenticate in the priority list, which is what
+         * actually settles the order. Being a group is not enough on its own:
+         * a group named in a route's middleware list is expanded and then
+         * sorted by priority, so without this the console's kill switch still
+         * ran after auth and a disabled console answered a redirect instead of
+         * a 404.
+         */
+        $middleware->prependToPriorityList(
+            /*
+             * The CONTRACT, not Authenticate itself. Laravel's priority list
+             * names `Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests`,
+             * so prepending before the concrete class matched nothing and
+             * quietly appended to the END - which is how a disabled console
+             * still answered a login redirect instead of a 404.
+             */
+            Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests::class,
+            App\Http\Middleware\PlatformConsole::class,
+        );
+
+        /*
+         * Where an unauthenticated operator is sent. The app has no `login`
+         * route - it is an API - so without this the framework looks for one
+         * and 500s.
+         */
+        $middleware->redirectGuestsTo(fn ($request) => $request->is('platform*')
+            ? route('platform.login')
+            : null);
 
         /*
          * Tenant resolution MUST run before authentication (FR-TEN-1), so it is

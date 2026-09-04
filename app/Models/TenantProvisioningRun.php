@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Stancl\Tenancy\Database\Concerns\CentralConnection;
 
 /**
  * One record of a provisioning, migration or lifecycle command against a tenant.
@@ -14,6 +15,16 @@ use Illuminate\Database\Eloquent\Model;
  */
 class TenantProvisioningRun extends Model
 {
+    /*
+     * Pinned to the central database.
+     *
+     * These rows live in the registry, so following the default connection
+     * would make them "exist" or not depending on whichever association
+     * happened to be initialised - and if a tenant's database is unreachable,
+     * reading them fails for a reason that has nothing to do with them.
+     */
+    use CentralConnection;
+
     public const STATUS_RUNNING = 'running';
     public const STATUS_SUCCEEDED = 'succeeded';
     public const STATUS_FAILED = 'failed';

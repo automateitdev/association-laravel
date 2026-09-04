@@ -277,9 +277,16 @@ Route::prefix('v1')->group(function () {
             Route::put('/settings', [SettingsController::class, 'update'])
                 ->middleware('permission:settings.edit');
 
-            // Gateway credentials are WRITE-ONLY: stored, never read back.
-            Route::put('/settings/gateway', [SettingsController::class, 'updateGateway'])
-                ->middleware('permission:settings.edit');
+            /*
+             * There is deliberately no route to SET the gateway.
+             *
+             * It moved to `php artisan tenant:gateway`, run by whoever
+             * provisions the association. `ar_account` decides where the money
+             * lands, and an endpoint that lets anybody with `settings.edit`
+             * change it hands a money-diversion vector to a role granted for
+             * editing fine rates. GET /settings still reports whether a gateway
+             * is configured and which account it ends in.
+             */
 
             /*
              * Taking money at the counter (FR-FEE-9).

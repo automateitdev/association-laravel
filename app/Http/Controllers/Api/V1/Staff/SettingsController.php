@@ -41,8 +41,22 @@ class SettingsController extends Controller
                 ],
                 'bank' => $this->bankDetails(),
 
-                // Whether a gateway is configured - never the credentials
-                // themselves, not even to a superadmin. They are write-only.
+                /*
+                 * READ-ONLY, and not merely because the credentials are secret.
+                 *
+                 * The gateway is set by whoever provisions the association
+                 * (`php artisan tenant:gateway`), not from this API at all.
+                 * `ar_account` is where the money lands, and an endpoint that
+                 * lets anybody holding `settings.edit` change it puts a
+                 * money-diversion vector in a role granted for editing fine
+                 * rates. Worse, because credentials are never readable, a
+                 * malicious change leaves almost nothing to compare against.
+                 *
+                 * What the association keeps is what it needs: whether a
+                 * gateway is set, which account it ends in, and the separate
+                 * `payment.online_enabled` switch - which can turn collection
+                 * OFF but cannot point it somewhere new.
+                 */
                 'gateway' => $this->gatewaySummary(),
             ],
         ]);
@@ -103,60 +117,6 @@ class SettingsController extends Controller
         return $this->index();
     }
 
-    /**
-     * Store the association's Sonali Payment Gateway credentials.
-     *
-     * WRITE-ONLY. They are never read back by any endpoint, including for the
-     * superadmin who set them: an API that can display a merchant password
-     * turns one compromised staff token into a compromised merchant account.
-     * Rotating means re-entering, which is the correct trade.
-     */
-    public function updateGateway(Request $request): JsonResponse
-    {
-        $validated = $request->validate([
-            'provider' => ['sometimes', 'in:spg'],
-            'api_base_url' => ['required', 'url', 'max:255'],
-            'redirect_base_url' => ['required', 'url', 'max:255'],
-            'username' => ['required', 'string', 'max:255'],
-            'password' => ['required', 'string', 'max:255'],
-            'ar_account' => ['required', 'string', 'max:50'],
-            'basic_auth' => ['required', 'string', 'max:255'],
-
-            // What Sonali sends US in the callback body, so we can tell a real
-            // callback from anyone who guessed the URL.
-            'callback_username' => ['required', 'string', 'max:255'],
-            'callback_password' => ['required', 'string', 'max:255'],
-
-            'is_active' => ['sometimes', 'boolean'],
-        ]);
-
-        $provider = $validated['provider'] ?? SonaliPaymentGateway::PROVIDER;
-
-        GatewayCredential::updateOrCreate(
-            ['provider' => $provider],
-            [
-                'credentials' => collect($validated)
-                    ->except(['provider', 'is_active'])
-                    ->all(),
-                'is_active' => $validated['is_active'] ?? true,
-            ]
-        );
-
-        AuditLog::create([
-            'actor_type' => $request->user()::class,
-            'actor_id' => $request->user()->id,
-            'subject_type' => GatewayCredential::class,
-            'subject_id' => 0,
-            'action' => 'gateway.credentials.updated',
-
-            // Never the values. The record is that it happened, by whom.
-            'after' => ['provider' => $provider, 'fields' => array_keys($validated)],
-            'ip' => $request->ip(),
-        ]);
-
-        return response()->json(['data' => $this->gatewaySummary()]);
-    }
-
     private function bankDetails(): array
     {
         return [
@@ -185,6 +145,10 @@ class SettingsController extends Controller
             'ar_account_last4' => $credential
                 ? substr((string) $credential->credential('ar_account'), -4)
                 : null,
+
+            // Said plainly, so an association looking for the missing form
+            // knows it is missing on purpose and who to ask.
+            'managed_by' => 'platform',
         ];
     }
 }

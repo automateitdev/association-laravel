@@ -172,17 +172,64 @@ class SettingsTest extends TenantTestCase
         ], $overrides);
     }
 
-    public function test_staff_can_configure_the_sonali_gateway(): void
+    /**
+     * Seed credentials the way the platform operator now does - through the
+     * model, from `php artisan tenant:gateway` - rather than through an API
+     * that no longer exists.
+     */
+    private function seedGateway(): void
+    {
+        $this->inTenant(function () {
+            GatewayCredential::updateOrCreate(
+                ['provider' => 'spg'],
+                ['credentials' => $this->gatewayPayload(), 'is_active' => true],
+            );
+        });
+    }
+
+    /**
+     * THE POINT OF THE MOVE: no API sets the gateway any more.
+     *
+     * `ar_account` decides where members' money lands. While this was a staff
+     * endpoint, anybody holding `settings.edit` - a permission granted for
+     * editing fine rates - could point it somewhere else. And because
+     * credentials are deliberately unreadable, such a change left almost
+     * nothing to compare against afterwards.
+     */
+    public function test_no_api_can_set_the_gateway(): void
     {
         $token = $this->staffToken();
 
         $this->withHeaders($this->headers($token))
+            // 404, not 405: the path is gone entirely, for every method.
             ->putJson('/api/v1/staff/settings/gateway', $this->gatewayPayload())
+            ->assertStatus(404);
+    }
+
+    /** And the association is told where it IS set, rather than left guessing. */
+    public function test_settings_say_the_gateway_is_managed_by_the_platform(): void
+    {
+        $token = $this->staffToken();
+
+        $this->withHeaders($this->headers($token))
+            ->getJson('/api/v1/staff/settings')
             ->assertOk()
-            ->assertJsonPath('data.provider', 'spg')
-            ->assertJsonPath('data.configured', true)
+            ->assertJsonPath('data.gateway.managed_by', 'platform')
+            ->assertJsonPath('data.gateway.configured', false);
+    }
+
+    public function test_a_configured_gateway_is_reported_without_its_secrets(): void
+    {
+        $token = $this->staffToken();
+        $this->seedGateway();
+
+        $this->withHeaders($this->headers($token))
+            ->getJson('/api/v1/staff/settings')
+            ->assertOk()
+            ->assertJsonPath('data.gateway.configured', true)
+            ->assertJsonPath('data.gateway.is_active', true)
             // Enough to confirm WHICH account, not enough to use it.
-            ->assertJsonPath('data.ar_account_last4', '0871');
+            ->assertJsonPath('data.gateway.ar_account_last4', '0871');
     }
 
     /**
@@ -192,16 +239,12 @@ class SettingsTest extends TenantTestCase
     public function test_gateway_credentials_are_never_readable_through_the_api(): void
     {
         $token = $this->staffToken();
+        $this->seedGateway();
 
-        $this->withHeaders($this->headers($token))
-            ->putJson('/api/v1/staff/settings/gateway', $this->gatewayPayload())
-            ->assertOk();
-
-        $response = $this->withHeaders($this->headers($token))
+        $body = $this->withHeaders($this->headers($token))
             ->getJson('/api/v1/staff/settings')
-            ->assertOk();
-
-        $body = $response->getContent();
+            ->assertOk()
+            ->getContent();
 
         foreach (['test-secret', 'callback-secret', 'Basic dGVzdDp0ZXN0', 'TESTUSER'] as $secret) {
             $this->assertStringNotContainsString(
@@ -218,11 +261,7 @@ class SettingsTest extends TenantTestCase
     /** NFR-SEC-2: encrypted at rest, so a database dump is not a merchant account. */
     public function test_gateway_credentials_are_encrypted_in_the_database(): void
     {
-        $token = $this->staffToken();
-
-        $this->withHeaders($this->headers($token))
-            ->putJson('/api/v1/staff/settings/gateway', $this->gatewayPayload())
-            ->assertOk();
+        $this->seedGateway();
 
         $this->inTenant(function () {
             $raw = \DB::table('gateway_credentials')->value('credentials');
@@ -238,17 +277,6 @@ class SettingsTest extends TenantTestCase
         });
     }
 
-    public function test_an_invalid_gateway_url_is_refused(): void
-    {
-        $token = $this->staffToken();
-
-        $this->withHeaders($this->headers($token))
-            ->putJson('/api/v1/staff/settings/gateway', $this->gatewayPayload([
-                'api_base_url' => 'not-a-url',
-            ]))
-            ->assertStatus(422);
-    }
-
     // ---- who may change any of this --------------------------------------
 
     public function test_an_operator_cannot_read_or_change_settings(): void
@@ -260,7 +288,7 @@ class SettingsTest extends TenantTestCase
             ->assertStatus(403);
 
         $this->withHeaders($this->headers($token))
-            ->putJson('/api/v1/staff/settings/gateway', $this->gatewayPayload())
+            ->putJson('/api/v1/staff/settings', ['fine' => ['rate' => '250.00']])
             ->assertStatus(403);
     }
 

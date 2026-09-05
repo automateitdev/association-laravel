@@ -43,3 +43,26 @@ Schedule::command('fines:accrue')
 Schedule::command('payments:expire-intents')
     ->hourly()
     ->withoutOverlapping();
+
+/*
+ * Ask the gateway about pending online payments (ADR-0007).
+ *
+ * The second completion path, and the one that catches what the first misses. A
+ * callback that never arrives is INVISIBLE: the member paid, the bank has the
+ * money, our row says pending, and nothing anywhere reports a problem. The only
+ * way to find out is to ask.
+ *
+ * Every ten minutes, not hourly like the expiry above, because the two are
+ * racing: `expire-intents` releases an abandoned intent after its TTL, and a
+ * payment that actually succeeded must be found first. Ten minutes leaves ample
+ * margin inside any sane TTL.
+ *
+ * Cheap when idle - it queries only pending online payments, and most
+ * associations have none - so the frequency costs little.
+ */
+Schedule::command('payments:reconcile')
+    ->everyTenMinutes()
+    ->withoutOverlapping()
+    ->onFailure(function () {
+        \Log::error('Payment reconciliation failed. Paid members may still show as pending.');
+    });

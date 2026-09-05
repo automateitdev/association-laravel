@@ -125,6 +125,90 @@ class SettingsTest extends TenantTestCase
             ->assertJsonPath('data.manual.available', false);
     }
 
+    // ---- what the app is told about online payment -----------------------
+
+    /**
+     * THE SWITCH ALONE IS NOT AVAILABILITY.
+     *
+     * It used to be the only thing checked, which meant an association could
+     * turn online payment on with no gateway configured and every member would
+     * be offered a "Pay now" button whose one outcome is a refusal three
+     * screens later. Three things are required and this asserts the switch is
+     * not enough on its own.
+     */
+    public function test_online_payment_is_unavailable_without_a_configured_gateway(): void
+    {
+        $this->inTenant(function () {
+            app(TenantSeedService::class)->seedAll();
+            Setting::put(Setting::ONLINE_PAYMENT_ENABLED, true);
+        });
+
+        config(['services.gateway.driver' => 'auto']);
+
+        $this->withHeaders($this->headers($this->memberToken()))
+            ->getJson('/api/v1/fees/payment-instructions')
+            ->assertOk()
+            ->assertJsonPath('data.online.available', false);
+    }
+
+    public function test_online_payment_is_available_when_switch_gateway_and_driver_all_agree(): void
+    {
+        $this->inTenant(function () {
+            app(TenantSeedService::class)->seedAll();
+            Setting::put(Setting::ONLINE_PAYMENT_ENABLED, true);
+
+            GatewayCredential::create([
+                'provider' => 'payflex_spg',
+                'credentials' => ['ar_account' => '00987654321098'],
+                'is_active' => true,
+            ]);
+        });
+
+        config(['services.gateway.driver' => 'auto']);
+
+        $this->withHeaders($this->headers($this->memberToken()))
+            ->getJson('/api/v1/fees/payment-instructions')
+            ->assertOk()
+            ->assertJsonPath('data.online.available', true)
+            ->assertJsonPath('data.online.provider', 'payflex_spg')
+
+            /*
+             * The BANK's name, not the middleware's. A member deciding whether
+             * to trust a payment page recognises "Sonali" and has never heard
+             * of PayFlex; which route we take to reach the bank is our business.
+             */
+            ->assertJsonPath('data.online.label', 'Sonali Payment Gateway');
+    }
+
+    /**
+     * A deployment forcing the fake must not advertise online payment.
+     *
+     * `PAYMENT_GATEWAY=fake` is the default, and it is what keeps an
+     * environment nobody has thought about from collecting money. Offering the
+     * button anyway would make that safety invisible right up to the point a
+     * member tapped it.
+     */
+    public function test_the_fake_driver_hides_online_payment_from_members(): void
+    {
+        $this->inTenant(function () {
+            app(TenantSeedService::class)->seedAll();
+            Setting::put(Setting::ONLINE_PAYMENT_ENABLED, true);
+
+            GatewayCredential::create([
+                'provider' => 'spg',
+                'credentials' => ['ar_account' => '00123456789012'],
+                'is_active' => true,
+            ]);
+        });
+
+        config(['services.gateway.driver' => 'fake']);
+
+        $this->withHeaders($this->headers($this->memberToken()))
+            ->getJson('/api/v1/fees/payment-instructions')
+            ->assertOk()
+            ->assertJsonPath('data.online.available', false);
+    }
+
     // ---- fine policy -----------------------------------------------------
 
     public function test_changing_the_fine_rate_is_audited(): void

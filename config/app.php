@@ -16,6 +16,24 @@ return [
     'name' => env('APP_NAME', 'Laravel'),
 
     /*
+     * Where the gateway sends the member's BROWSER back to.
+     *
+     * It has to match the `scheme` in the app's app.json, or the hosted payment
+     * page finishes on a URL nothing on the phone can open and the member is
+     * left staring at a browser tab wondering whether their money went.
+     *
+     * Defaulted to the shipped app's scheme rather than left to an env nobody
+     * sets: the two were `bcsapp` and `bcsapprn` for a while, which is a
+     * mismatch no test could see because the browser is the only thing that
+     * reads it.
+     *
+     * The return is not evidence of payment either way - the app polls the
+     * server, which asks the gateway (ADR-0007). This only decides whether the
+     * member gets back to the app by themselves.
+     */
+    'mobile_deep_link' => env('MOBILE_DEEP_LINK', 'bcsapprn://payment'),
+
+    /*
     |--------------------------------------------------------------------------
     | Application Environment
     |--------------------------------------------------------------------------

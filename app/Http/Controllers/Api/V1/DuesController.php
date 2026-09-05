@@ -12,6 +12,7 @@ use App\Models\Tenant\Member;
 use App\Models\Tenant\PaymentInfo;
 use App\Models\Tenant\PaymentInfoItem;
 use App\Models\Tenant\Setting;
+use App\Services\Gateways\GatewayRegistry;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -166,6 +167,20 @@ class DuesController extends Controller
     }
 
     /**
+     * What a member should be told they are paying through.
+     *
+     * The bank's name, not ours and not the middleware's: a member deciding
+     * whether to trust a payment page recognises "Sonali", and has never heard
+     * of PayFlex. Which route we take to reach the bank is our business.
+     *
+     * @var array<string, string>
+     */
+    private const PROVIDER_LABELS = [
+        'spg' => 'Sonali Payment Gateway',
+        'payflex_spg' => 'Sonali Payment Gateway',
+    ];
+
+    /**
      * How the member is meant to pay.
      *
      * Without this the manual flow is incomplete: the app tells a member to
@@ -175,8 +190,10 @@ class DuesController extends Controller
      * `online_enabled` tells the app whether to offer a "Pay now" button at
      * all, so a member is never shown a route that is not configured.
      */
-    public function instructions(): JsonResponse
+    public function instructions(GatewayRegistry $gateways): JsonResponse
     {
+        $provider = $gateways->activeProvider();
+
         $bank = [
             'account_name' => (string) Setting::get(Setting::BANK_ACCOUNT_NAME),
             'account_number' => (string) Setting::get(Setting::BANK_ACCOUNT_NUMBER),
@@ -195,9 +212,24 @@ class DuesController extends Controller
                     'available' => $bank['account_number'] !== '',
                     'bank' => $bank,
                 ],
+                /*
+                 * THREE THINGS, ALL REQUIRED, and the switch is only one of
+                 * them. It used to be the only one, which meant an association
+                 * could turn online payment on with no gateway configured and
+                 * every member would be offered a "Pay now" button whose one
+                 * outcome is a refusal three screens later.
+                 *
+                 * `provider` is read rather than hardcoded: there are now two
+                 * routes to Sonali, and telling the app the wrong one would put
+                 * the wrong name in front of a member at the moment they are
+                 * deciding whether to trust the payment.
+                 */
                 'online' => [
-                    'available' => (bool) Setting::get(Setting::ONLINE_PAYMENT_ENABLED),
-                    'provider' => 'spg',
+                    'available' => (bool) Setting::get(Setting::ONLINE_PAYMENT_ENABLED)
+                        && $provider !== null
+                        && config('services.gateway.driver') !== 'fake',
+                    'provider' => $provider ?? 'none',
+                    'label' => self::PROVIDER_LABELS[$provider] ?? 'Online payment',
                 ],
             ],
         ]);

@@ -305,6 +305,32 @@ class GatewayTest extends TenantTestCase
     }
 
     /**
+     * The command exists, and reaches the association.
+     *
+     * `reconcilePending()` had tests from the day it was written and NO WAY TO
+     * RUN IT — nothing scheduled it and no command invoked it — so ADR-0007's
+     * promise that the design "degrades to slower completion, not incorrect
+     * completion" was not actually kept. A payment whose callback never arrived
+     * stayed pending forever.
+     *
+     * Tested through the command rather than the service so the fan-out is
+     * covered too: the service is per-tenant, and a command that forgot to
+     * enter the tenant would pass every service test while reconciling nothing.
+     */
+    public function test_the_reconcile_command_completes_a_pending_payment(): void
+    {
+        [$member, $token, $assign] = $this->memberWithDues();
+        [$payment] = $this->createOnlinePayment($token, $assign->id);
+
+        $this->artisan('payments:reconcile', ['--tenant' => $this->slug()])
+            ->assertSuccessful();
+
+        $this->inTenant(function () use ($payment) {
+            $this->assertSame(PaymentInfo::STATUS_COMPLETED, PaymentInfo::find($payment['id'])->status);
+        });
+    }
+
+    /**
      * A terminal failure at the gateway releases the member's instalments
      * rather than stranding them in Requested (D-18).
      */

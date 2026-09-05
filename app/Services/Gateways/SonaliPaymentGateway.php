@@ -65,27 +65,56 @@ class SonaliPaymentGateway implements PaymentGateway
     public function createSession(PaymentInfo $payment, string $returnUrl): GatewaySession
     {
         $credentials = $this->credentials();
-        $token = $this->accessToken($credentials);
 
-        $response = Http::asJson()
-            ->withHeaders(['Authorization' => $credentials->credential('basic_auth')])
-            ->timeout(30)
+        // The token is issued FOR this invoice, so it cannot be fetched first
+        // and reused. See accessToken().
+        $token = $this->accessToken($credentials, $payment);
+
+        $response = $this->client($credentials)
             ->post($this->apiUrl($credentials, 'CreatePaymentRequest'), [
-                'AccessToken' => $token,
-                'ARAccount' => $credentials->credential('ar_account'),
-                'InvoiceNo' => $payment->invoice_no,
+                'authentication' => [
+                    'apiAccessUserId' => $credentials->credential('username'),
+                    'apiAccessToken' => $token,
+                ],
 
-                // What the member actually pays: instalments PLUS fine. The
-                // split is preserved on our side; the gateway collects a total.
-                'TotalAmount' => (string) $payment->total_amount,
+                'referenceInfo' => [
+                    'InvoiceNo' => $payment->invoice_no,
+                    'invoiceDate' => $this->invoiceDate($payment),
+                    'returnUrl' => $returnUrl,
 
-                'CustomerName' => $payment->member->name,
-                'CustomerMobile' => $payment->member->mobile ?? '',
-                'CustomerEmail' => $payment->member->email ?? '',
-                'RedirectUrl' => $returnUrl,
+                    // What the member actually pays: instalments PLUS fine. The
+                    // split is preserved on our side; the bank collects a total.
+                    'totalAmount' => (string) $payment->total_amount,
+
+                    /*
+                     * SPG's own spelling. "applicent" is wrong English and the
+                     * right key - renaming it to `applicantName` because it
+                     * looks like a typo is how this call starts failing.
+                     */
+                    'applicentName' => $payment->member->name,
+                    'applicentContactNo' => $payment->member->mobile ?: '010000000',
+
+                    /*
+                     * The legacy call hardcodes "2132" here, which is nobody's
+                     * reference for anything. Ours carries the payment id, so a
+                     * row in SPG's records can be traced back to one here.
+                     *
+                     * If the sandbox rejects the request, this is the first
+                     * field to suspect - it is the only one that deviates from
+                     * the call known to work in production.
+                     */
+                    'extraRefNo' => (string) $payment->id,
+                ],
+
+                'creditInformations' => [[
+                    'slno' => '1',
+                    'crAccount' => $credentials->credential('ar_account'),
+                    'crAmount' => (string) $payment->total_amount,
+                    'tranMode' => 'TRN',
+                ]],
             ]);
 
-        $sessionToken = $response->json('SessionToken') ?? $response->json('session_token');
+        $sessionToken = $response->json('session_token') ?? $response->json('SessionToken');
 
         if ($response->failed() || ! $sessionToken) {
             throw new RuntimeException(
@@ -102,23 +131,39 @@ class SonaliPaymentGateway implements PaymentGateway
     public function verify(string $reference): GatewayVerification
     {
         $credentials = $this->credentials();
-        $token = $this->accessToken($credentials);
 
-        $response = Http::asJson()
-            ->withHeaders(['Authorization' => $credentials->credential('basic_auth')])
-            ->timeout(30)
+        $response = $this->client($credentials)
             ->post($this->apiUrl($credentials, 'TransactionVerificationWithToken'), [
-                'AccessToken' => $token,
-                'SessionToken' => $reference,
+                /*
+                 * `session_Token`, with that capital T in the middle. It is not
+                 * a typo here - it is SPG's key, and the call fails silently
+                 * against any tidier spelling. No access token is sent: this
+                 * endpoint authenticates on the Authorization header alone.
+                 */
+                'session_Token' => $reference,
             ]);
 
         $body = $response->json() ?? [];
+
+        if ($response->failed()) {
+            /*
+             * PENDING, not FAILED. An endpoint that would not answer says
+             * nothing about whether the member paid, and treating it as failure
+             * releases their instalments underneath a completed payment.
+             */
+            return new GatewayVerification(
+                status: GatewayVerification::PENDING,
+                reference: $reference,
+                raw: is_array($body) ? $body : ['body' => $response->body()],
+            );
+        }
 
         return new GatewayVerification(
             status: $this->mapStatus($body),
             reference: $reference,
 
-            // Recorded for reconciliation only. Never payable_amount.
+            // What SPG says it collected, including its own vat and commission.
+            // Recorded for reconciliation, never copied into payable_amount.
             amount: isset($body['PayAmount']) ? (string) $body['PayAmount'] : null,
 
             transactionId: $body['TransactionId'] ?? null,
@@ -158,40 +203,101 @@ class SonaliPaymentGateway implements PaymentGateway
     // ---- internals -------------------------------------------------------
 
     /**
-     * The legacy code treats a payment as successful on an explicit success
-     * status and nothing else. Anything unrecognised is PENDING rather than
-     * FAILED: releasing a member's instalments because we could not parse a
-     * response would be worse than leaving them held for the expiry sweep.
+     * `PaymentStatus` is a NUMBER, and 200 is the only success.
+     *
+     * The first version of this matched strings - 'success', 'paid',
+     * 'completed' - which SPG never sends, so it would have reported every real
+     * payment as pending forever. The legacy code, which has been taking money
+     * for years, tests `PaymentStatus == 200` and nothing else.
+     *
+     * Anything unrecognised stays PENDING rather than FAILED. Releasing a
+     * member's instalments because we could not parse a response is worse than
+     * holding them until the expiry sweep, which is bounded.
      */
     private function mapStatus(array $body): string
     {
-        $status = strtolower((string) ($body['PaymentStatus'] ?? $body['Status'] ?? ''));
+        $status = (string) ($body['PaymentStatus'] ?? $body['Status'] ?? '');
 
         return match (true) {
-            in_array($status, ['success', 'paid', 'completed'], true) => GatewayVerification::PAID,
-            in_array($status, ['failed', 'failure', 'declined'], true) => GatewayVerification::FAILED,
-            in_array($status, ['cancel', 'cancelled', 'canceled'], true) => GatewayVerification::CANCELLED,
+            $status === '200' => GatewayVerification::PAID,
+
+            // Kept alongside the numeric test rather than instead of it: the
+            // UAT endpoint has not been seen, and a wordier answer there should
+            // not be read as a failure.
+            in_array(strtolower($status), ['success', 'paid', 'completed'], true) => GatewayVerification::PAID,
+            in_array(strtolower($status), ['failed', 'failure', 'declined'], true) => GatewayVerification::FAILED,
+            in_array(strtolower($status), ['cancel', 'cancelled', 'canceled'], true) => GatewayVerification::CANCELLED,
+
             default => GatewayVerification::PENDING,
         };
     }
 
-    private function accessToken(GatewayCredential $credentials): string
+    /**
+     * A token for ONE invoice, not a session token for the merchant.
+     *
+     * This was the first version's worst mistake: it sent only a username and
+     * password, as though `GetAccessToken` were a login. SPG wants the invoice,
+     * the amount and the credit account in the same call - the token it hands
+     * back is scoped to that payment - so it cannot be fetched once and reused,
+     * and a cached one would authorise the wrong amount.
+     */
+    private function accessToken(GatewayCredential $credentials, PaymentInfo $payment): string
     {
-        $response = Http::asJson()
-            ->withHeaders(['Authorization' => $credentials->credential('basic_auth')])
-            ->timeout(30)
+        $response = $this->client($credentials)
             ->post($this->apiUrl($credentials, 'GetAccessToken'), [
-                'UserName' => $credentials->credential('username'),
-                'Password' => $credentials->credential('password'),
+                'AccessUser' => [
+                    'userName' => $credentials->credential('username'),
+                    'password' => $credentials->credential('password'),
+                ],
+                'invoiceNo' => $payment->invoice_no,
+                'amount' => (string) $payment->total_amount,
+                'invoiceDate' => $this->invoiceDate($payment),
+                'accounts' => [[
+                    'crAccount' => $credentials->credential('ar_account'),
+
+                    /*
+                     * A JSON NUMBER here and a JSON STRING in
+                     * `creditInformations` below. That asymmetry is in the call
+                     * that works in production, so it is reproduced rather than
+                     * tidied - the float cast is for the wire only and never
+                     * reaches our own arithmetic, which stays bcmath on strings.
+                     */
+                    'crAmount' => (float) $payment->total_amount,
+                ]],
             ]);
 
-        $token = $response->json('AccessToken') ?? $response->json('access_token');
+        $token = $response->json('access_token') ?? $response->json('AccessToken');
 
         if ($response->failed() || ! $token) {
-            throw new RuntimeException('Sonali Payment Gateway refused to issue an access token.');
+            throw new RuntimeException(
+                'Sonali Payment Gateway refused to issue an access token: '.$response->body()
+            );
         }
 
         return (string) $token;
+    }
+
+    /**
+     * One HTTP client, so every call carries the same auth and timeout.
+     *
+     * NOTE FOR A FIRST SANDBOX RUN: the legacy integration disables TLS peer
+     * verification (`CURLOPT_SSL_VERIFYPEER => false`). This does not, because
+     * turning it off would mean nobody could tell SPG from anyone able to
+     * intercept the connection. If the sandbox fails with a certificate error,
+     * that is why - and the fix is the correct CA bundle on the server, not
+     * this line.
+     */
+    private function client(GatewayCredential $credentials): \Illuminate\Http\Client\PendingRequest
+    {
+        return Http::asJson()
+            ->withHeaders(['Authorization' => (string) $credentials->credential('basic_auth')])
+            ->timeout(30);
+    }
+
+    /** `Y-m-d`, from the row rather than the wall clock. */
+    private function invoiceDate(PaymentInfo $payment): string
+    {
+        return $payment->created_at?->toDateString() ?? now()->toDateString();
     }
 
     private function apiUrl(GatewayCredential $credentials, string $method): string

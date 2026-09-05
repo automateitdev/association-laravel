@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Contracts\PaymentGateway;
 use App\Services\Gateways\FakePaymentGateway;
+use App\Services\Gateways\GatewayRegistry;
 use Illuminate\Database\Events\ConnectionEstablished;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
@@ -16,22 +17,25 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         /*
-         * The payment gateway.
+         * The payment gateway, resolved PER ASSOCIATION.
          *
-         * There is currently NO live gateway integration, by decision: the
-         * shurjoPay adapter was removed rather than carried as untested code
-         * that had never run against a real merchant account.
+         * Not a container-level choice, because there is more than one way to
+         * reach the same bank: SPG directly (its v2 API) or SPG through the
+         * PayFlex middleware (its v3). Each association holds its own merchant
+         * account (A-1) and names its own provider in `gateway_credentials`, so
+         * binding one implementation here would turn a per-association setting
+         * into a deploy decision for everybody at once - and would mean the
+         * unproven path could only be tried by making it everybody's path.
          *
-         * FakePaymentGateway is therefore the only implementation. It is not a
-         * stopgap in the code's eyes - the whole payment lifecycle (session,
-         * callback, verification, ledger posting, share minting) is exercised
-         * against it, so whichever provider is chosen later plugs in behind the
-         * PaymentGateway interface without any of that design moving.
-         *
-         * Until then, MANUAL payments are the only route to actually collecting
-         * money, and members cannot self-serve an online payment.
+         * `PAYMENT_GATEWAY` defaults to `fake`, so a deployment takes no real
+         * money until somebody deliberately says otherwise, and every test -
+         * which configures no credentials - keeps getting the fake exactly as
+         * before. The whole payment lifecycle (session, callback, verification,
+         * ledger posting, share minting) is exercised against the fake, which is
+         * why a new provider plugs in behind this interface without any of that
+         * design moving.
          */
-        $this->app->bind(PaymentGateway::class, fn () => $this->app->make(FakePaymentGateway::class));
+        $this->app->bind(PaymentGateway::class, fn () => $this->app->make(GatewayRegistry::class)->active());
 
         // Singleton so tests can configure the fake and have the service see it.
         $this->app->singleton(FakePaymentGateway::class);

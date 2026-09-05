@@ -38,14 +38,17 @@ return [
     /*
      * Payment gateway.
      *
-     * There is no live gateway integration. The shurjoPay adapter was removed
-     * rather than carried as untested code, so FakePaymentGateway is the only
-     * implementation and manual payment is the only real collection route.
+     * `fake` (the default) forces FakePaymentGateway for every association, so
+     * a deployment takes no real money until somebody deliberately changes it.
+     * `auto` lets each association's own `gateway_credentials.provider` decide -
+     * `spg` for SPG directly, `payflex_spg` for SPG through PayFlex.
      *
-     * When a provider is chosen, add its adapter behind the PaymentGateway
-     * interface and switch on this key. Merchant CREDENTIALS never belong here:
-     * they live per association in the tenant database, encrypted, because each
-     * association holds its own merchant account (A-1).
+     * The default is deliberately the safe one. An environment that has not
+     * been thought about should not be able to collect money.
+     *
+     * Merchant CREDENTIALS never belong here: they live per association in the
+     * tenant database, encrypted, because each association holds its own
+     * merchant account (A-1).
      */
     'gateway' => [
         'driver' => env('PAYMENT_GATEWAY', 'fake'),

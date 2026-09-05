@@ -66,6 +66,24 @@ class RouteAuthorisationSweepTest extends TestCase
         // but redirect into the app - the member's return is not evidence of
         // payment, and completion happens on the callback above.
         'GET api/v1/webhooks/{tenant}/return/{payment}',
+
+        // PayFlex's callbacks. Unversioned and without a {tenant}, because
+        // PayFlex constructs the URL itself - it strips everything from `/api/`
+        // off the address we gave it and appends its own fixed path, so neither
+        // a version nor a tenant survives. The association comes from the host.
+        //
+        // UNSIGNED, unlike the webhook above: PayFlex sends no signature at all.
+        // What makes that acceptable is that the body is not evidence of
+        // anything. The only field read from it is an invoice number; the
+        // amount, the status and the transaction id are ignored, and everything
+        // that decides whether money moved comes from asking PayFlex back over
+        // an authenticated request.
+        //
+        // So the worst an attacker who guesses this URL can do is make us
+        // re-verify a payment we already hold - which the reconciliation sweep
+        // does anyway, on a timer.
+        'POST api/pay-flex/notify',
+        'POST api/pay-flex/verify',
     ];
 
     /**

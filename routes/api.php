@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\DuesController;
 use App\Http\Controllers\Api\V1\GatewayController;
+use App\Http\Controllers\Api\V1\PayflexCallbackController;
 use App\Http\Controllers\Api\V1\HealthController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\PaymentDocumentController;
@@ -43,6 +44,35 @@ use Illuminate\Support\Facades\Route;
 | be authenticated AND authorised, or allowlisted with a written reason.
 |
 */
+
+/*
+|--------------------------------------------------------------------------
+| PayFlex callbacks — deliberately UNVERSIONED
+|--------------------------------------------------------------------------
+|
+| The only routes in this file outside `v1`, and not by choice. PayFlex builds
+| the callback URL itself: it strips everything from `/api/` off the address we
+| gave it and appends its own fixed `/api/pay-flex/notify`. A version segment
+| cannot survive that, and neither can a {tenant} - so the association is
+| resolved from the HOST against the `domains` table, which means an association
+| using PayFlex must have a working domain row.
+|
+| This is a real exception to FR-API-1, written down rather than quietly made.
+| The alternative is changing `buildCallbackUrl` in the PayFlex repo, which
+| would move the problem onto every other client already integrated with it.
+|
+| Unsigned, because PayFlex sends no signature. Safe only because the body is a
+| doorbell: the single field read from it is an invoice number, and everything
+| that decides whether money moved comes from asking PayFlex back over an
+| authenticated request. See PayflexCallbackController.
+|
+| Two paths for one meaning — `notify` is PayFlex's first attempt, `verify` its
+| retry. Allowlisted in RouteAuthorisationSweepTest with that reasoning.
+|
+*/
+
+Route::post('/pay-flex/notify', PayflexCallbackController::class)->name('api.payflex.notify');
+Route::post('/pay-flex/verify', PayflexCallbackController::class)->name('api.payflex.verify');
 
 Route::prefix('v1')->group(function () {
 

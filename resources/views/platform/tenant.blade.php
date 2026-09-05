@@ -146,7 +146,7 @@
         @elseif ($gateway)
             <div class="row" style="justify-content: space-between; margin-bottom: 12px;">
                 <div>
-                    <strong>{{ $gateway['provider'] }}</strong>
+                    <strong>{{ $gateway['label'] ?? $gateway['provider'] }}</strong>
                     <span class="pill {{ $gateway['is_active'] ? 'active' : 'suspended' }}">
                         {{ $gateway['is_active'] ? 'active' : 'switched off' }}
                     </span>
@@ -178,44 +178,95 @@
             </div>
         @endif
 
-        <form method="POST" action="{{ route('platform.tenant.gateway', $tenant->getKey()) }}"
-              autocomplete="off">
-            @csrf
+        {{--
+          ONE FORM PER PROVIDER, rather than one form and a JavaScript switch.
 
-            @foreach (\App\Services\GatewayConfigurator::FIELDS as $field => $meta)
-                <label for="gw-{{ $field }}">{{ $meta['label'] }}</label>
-                @isset($meta['help'])
-                    <div class="muted" style="font-size: 12px; margin-bottom: 4px;">{{ $meta['help'] }}</div>
-                @endisset
-                {{--
-                  `type=password` on the secrets so a shoulder cannot read them,
-                  and autocomplete off throughout: a browser offering to save a
-                  merchant password is a copy of it nobody decided to make.
-                --}}
-                <input type="{{ $meta['secret'] ? 'password' : 'text' }}"
-                       id="gw-{{ $field }}" name="{{ $field }}" required
-                       autocomplete="off" spellcheck="false">
-            @endforeach
+          The two routes to Sonali take different fields, so a single form would
+          have to mark everything optional and sort it out on the server - which
+          means the browser stops catching a missed field, and the first thing
+          that notices is a validation error after eight values were typed. Each
+          block carries its own `required` attributes and its own hidden
+          provider, and the page still has no JavaScript in it.
+        --}}
+        @foreach (\App\Services\GatewayConfigurator::PROVIDERS as $key => $meta)
+            <details style="margin-top: 12px;" @if (($gateway['provider'] ?? 'spg') === $key) open @endif>
+                <summary style="cursor: pointer; font-weight: 600;">
+                    {{ $meta['label'] }}
+                    @if (($gateway['provider'] ?? null) === $key)
+                        <span class="pill active">in use</span>
+                    @endif
+                </summary>
 
-            {{--
-              Re-typed, not confirmed with a checkbox. This is the one field
-              where a typo does not fail loudly: it succeeds, and the money goes
-              somewhere else.
-            --}}
-            <label for="gw-confirm">Type the AR account again</label>
-            <input type="text" id="gw-confirm" name="ar_account_confirm" required
-                   autocomplete="off" spellcheck="false">
+                <p class="muted" style="margin: 8px 0 4px;">{{ $meta['blurb'] }}</p>
 
-            <div class="row" style="margin-top: 14px;">
-                <button type="submit" class="primary">
-                    {{ $gateway ? 'Replace the configuration' : 'Configure gateway' }}
-                </button>
-                <span class="muted">
-                    Recorded in the audit log — field names and the last four digits, never values —
-                    and in the association's own log, because they are entitled to know it changed.
-                </span>
-            </div>
-        </form>
+                <form method="POST" action="{{ route('platform.tenant.gateway', $tenant->getKey()) }}"
+                      autocomplete="off">
+                    @csrf
+                    <input type="hidden" name="provider" value="{{ $key }}">
+
+                    @foreach ($meta['fields'] as $field => $spec)
+                        <label for="{{ $key }}-{{ $field }}">
+                            {{ $spec['label'] }}
+                            @if ($spec['optional'] ?? false)
+                                <span class="muted">(optional)</span>
+                            @endif
+                        </label>
+                        @isset($spec['help'])
+                            <div class="muted" style="font-size: 12px; margin-bottom: 4px;">{{ $spec['help'] }}</div>
+                        @endisset
+                        {{--
+                          `type=password` on the secrets so a shoulder cannot read
+                          them, and autocomplete off throughout: a browser offering
+                          to save a merchant password is a copy of it nobody
+                          decided to make.
+                        --}}
+                        <input type="{{ $spec['secret'] ? 'password' : 'text' }}"
+                               id="{{ $key }}-{{ $field }}" name="{{ $field }}"
+                               @required(! ($spec['optional'] ?? false))
+                               autocomplete="off" spellcheck="false">
+                    @endforeach
+
+                    {{--
+                      Re-typed, not confirmed with a checkbox. This is the one
+                      field where a typo does not fail loudly: it succeeds, and
+                      the money goes somewhere else.
+                    --}}
+                    <label for="{{ $key }}-confirm">Type the AR account again</label>
+                    <input type="text" id="{{ $key }}-confirm" name="ar_account_confirm" required
+                           autocomplete="off" spellcheck="false">
+
+                    <div class="row" style="margin-top: 14px;">
+                        <button type="submit" class="primary">
+                            @if (($gateway['provider'] ?? null) === $key)
+                                Replace this configuration
+                            @elseif ($gateway)
+                                Switch to {{ $meta['label'] }}
+                            @else
+                                Configure {{ $meta['label'] }}
+                            @endif
+                        </button>
+                        <span class="muted">
+                            Recorded in the audit log — field names and the last four digits, never
+                            values — and in the association's own log.
+                        </span>
+                    </div>
+
+                    @if ($gateway && ($gateway['provider'] ?? null) !== $key)
+                        <p class="muted" style="font-size: 12px; margin-bottom: 0;">
+                            {{--
+                              An association has exactly one active gateway. Two
+                              would make "which one is this association using"
+                              depend on row order, which is how money ends up
+                              collected through the provider somebody thought
+                              they had left.
+                            --}}
+                            Switching here turns the current gateway off. Its credentials are kept,
+                            so switching back is a click rather than eight fields again.
+                        </p>
+                    @endif
+                </form>
+            </details>
+        @endforeach
 
         <p class="muted" style="margin-bottom: 0; margin-top: 12px;">
             The same thing at the server: <code>php artisan tenant:gateway {{ $tenant->getKey() }}</code>.

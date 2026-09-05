@@ -8,8 +8,8 @@ use App\Models\OperatorAuditLog;
 use App\Models\Tenant;
 use App\Models\Tenant\AuditLog;
 use App\Models\Tenant\GatewayCredential;
-use App\Services\Gateways\SonaliPaymentGateway;
 use DomainException;
+use Illuminate\Support\Facades\DB;
 use Throwable;
 
 /**
@@ -44,36 +44,102 @@ use Throwable;
 class GatewayConfigurator
 {
     /**
-     * Every field, in the order a person is asked for them.
+     * The providers an operator may configure, and what each one needs.
+     *
+     * TWO ROUTES TO THE SAME BANK. `spg` reaches Sonali directly on its v2 API;
+     * `payflex_spg` reaches the same bank through the PayFlex middleware, which
+     * speaks SPG v3 and fronts several other gateways besides. Which one an
+     * association uses is its own setting, so one can be moved onto PayFlex and
+     * proved while every other stays on the path that already works.
+     *
+     * Not called "version 1" and "version 2", though they get called that in
+     * conversation. Both the legacy system and the direct adapter call SPG v2
+     * and PayFlex calls v3, so a version number in these keys would be actively
+     * misleading to whoever reads them next.
      *
      * `secret` decides two things at once: whether the CLI hides typing, and
      * whether the browser renders `type=password`. One list, so the two surfaces
      * cannot disagree about which values are sensitive.
      *
-     * @var array<string, array{label: string, secret: bool, help?: string}>
+     * @var array<string, array{label: string, blurb: string, fields: array<string, array{label: string, secret: bool, help?: string, optional?: bool}>}>
      */
-    public const FIELDS = [
-        'api_base_url' => ['label' => 'API base URL', 'secret' => false],
-        'redirect_base_url' => [
-            'label' => 'Redirect base URL',
-            'secret' => false,
-            'help' => 'Where the member comes back to after paying.',
+    public const PROVIDERS = [
+        'spg' => [
+            'label' => 'Sonali Payment Gateway — direct',
+            'blurb' => "Talks to SPG's v2 API from this server. What the legacy system does, "
+                .'and what every association has used until now.',
+            'fields' => [
+                'api_base_url' => ['label' => 'API base URL', 'secret' => false],
+                'redirect_base_url' => [
+                    'label' => 'Redirect base URL',
+                    'secret' => false,
+                    'help' => 'Where the member comes back to after paying.',
+                ],
+                'username' => ['label' => 'Merchant username', 'secret' => false],
+                'password' => ['label' => 'Merchant password', 'secret' => true],
+                'ar_account' => [
+                    'label' => 'AR account',
+                    'secret' => false,
+                    'help' => 'Where the money lands. Checked twice before anything is written.',
+                ],
+                'basic_auth' => ['label' => 'Basic auth token', 'secret' => true],
+                'callback_username' => [
+                    'label' => 'Callback username',
+                    'secret' => false,
+                    'help' => 'What the gateway sends us, not what we send it.',
+                ],
+                'callback_password' => ['label' => 'Callback password', 'secret' => true],
+            ],
         ],
-        'username' => ['label' => 'Merchant username', 'secret' => false],
-        'password' => ['label' => 'Merchant password', 'secret' => true],
-        'ar_account' => [
-            'label' => 'AR account',
-            'secret' => false,
-            'help' => 'Where the money lands. Checked twice before anything is written.',
+
+        'payflex_spg' => [
+            'label' => 'Sonali Payment Gateway — through PayFlex',
+            'blurb' => "Talks to PayFlex, which talks to SPG's v3 API. The association still needs "
+                .'its own SPG merchant credentials: PayFlex will otherwise fall back to its own '
+                .'account, which would collect this association\'s money into somebody else\'s.',
+            'fields' => [
+                'payflex_base_url' => [
+                    'label' => 'PayFlex base URL',
+                    'secret' => false,
+                    'help' => 'The middleware, not the bank. No trailing path.',
+                ],
+                'payflex_username' => [
+                    'label' => 'PayFlex username',
+                    'secret' => false,
+                    'help' => 'The client-domain credentials PayFlex issued us, sent as Basic auth.',
+                ],
+                'payflex_password' => ['label' => 'PayFlex password', 'secret' => true],
+
+                'spg_user' => [
+                    'label' => 'SPG merchant username',
+                    'secret' => false,
+                    'help' => "The association's own SPG account, passed through on every request.",
+                ],
+                'spg_password' => ['label' => 'SPG merchant password', 'secret' => true],
+
+                'ar_account' => [
+                    'label' => 'AR account',
+                    'secret' => false,
+                    'help' => 'Where the money lands. Checked twice before anything is written.',
+                ],
+                'party_name' => [
+                    'label' => 'Party name',
+                    'secret' => false,
+                    'optional' => true,
+                    'help' => 'Shown on the SPG voucher. Optional.',
+                ],
+            ],
         ],
-        'basic_auth' => ['label' => 'Basic auth token', 'secret' => true],
-        'callback_username' => [
-            'label' => 'Callback username',
-            'secret' => false,
-            'help' => 'What the gateway sends us, not what we send it.',
-        ],
-        'callback_password' => ['label' => 'Callback password', 'secret' => true],
     ];
+
+    /**
+     * @return array<string, array{label: string, secret: bool, help?: string, optional?: bool}>
+     */
+    public static function fieldsFor(string $provider): array
+    {
+        return self::PROVIDERS[$provider]['fields']
+            ?? throw new DomainException("There is no gateway called '{$provider}'.");
+    }
 
     /**
      * What is configured, with no secret in it.
@@ -108,7 +174,16 @@ class GatewayConfigurator
     private function read(Tenant $tenant): ?array
     {
         return $tenant->run(function () {
-            $credential = GatewayCredential::where('provider', SonaliPaymentGateway::PROVIDER)->first();
+            /*
+             * The ACTIVE row, whichever provider it names - not a lookup for one
+             * hard-coded provider. An association that moved from the direct
+             * gateway to PayFlex keeps the old row switched off, and a summary
+             * that asked only about `spg` would report the dead one.
+             */
+            $credential = GatewayCredential::query()
+                ->orderByDesc('is_active')
+                ->orderByDesc('updated_at')
+                ->first();
 
             if (! $credential) {
                 return null;
@@ -116,6 +191,7 @@ class GatewayConfigurator
 
             return [
                 'provider' => $credential->provider,
+                'label' => self::PROVIDERS[$credential->provider]['label'] ?? $credential->provider,
                 'is_active' => (bool) $credential->is_active,
 
                 /*
@@ -136,17 +212,25 @@ class GatewayConfigurator
      *
      * @throws DomainException when a field is missing or the AR account was not confirmed
      */
-    public function store(Tenant $tenant, array $values, string $source, ?string $confirmedAccount = null): void
-    {
+    public function store(
+        Tenant $tenant,
+        string $provider,
+        array $values,
+        string $source,
+        ?string $confirmedAccount = null,
+    ): void {
+        $fields = self::fieldsFor($provider);
         $clean = [];
 
-        foreach (array_keys(self::FIELDS) as $field) {
+        foreach ($fields as $field => $meta) {
             $value = trim((string) ($values[$field] ?? ''));
 
             if ($value === '') {
-                throw new DomainException(
-                    self::FIELDS[$field]['label']." is required. Nothing was written."
-                );
+                if ($meta['optional'] ?? false) {
+                    continue;
+                }
+
+                throw new DomainException($meta['label'].' is required. Nothing was written.');
             }
 
             $clean[$field] = $value;
@@ -164,15 +248,30 @@ class GatewayConfigurator
             );
         }
 
-        $tenant->run(function () use ($clean) {
-            GatewayCredential::updateOrCreate(
-                ['provider' => SonaliPaymentGateway::PROVIDER],
-                ['credentials' => $clean, 'is_active' => true],
-            );
+        $tenant->run(function () use ($clean, $provider) {
+            /*
+             * AT MOST ONE ACTIVE GATEWAY. Configuring one switches every other
+             * off in the same transaction, because "which gateway is this
+             * association using" has to have exactly one answer - two active
+             * rows would make the answer depend on row order, which is how an
+             * association ends up collecting through the provider it thought it
+             * had left.
+             *
+             * The others are kept, not deleted: moving back is then a switch
+             * rather than eight fields typed again from a password manager.
+             */
+            DB::transaction(function () use ($clean, $provider) {
+                GatewayCredential::where('provider', '!=', $provider)->update(['is_active' => false]);
+
+                GatewayCredential::updateOrCreate(
+                    ['provider' => $provider],
+                    ['credentials' => $clean, 'is_active' => true],
+                );
+            });
         });
 
         $this->record($tenant, 'gateway.credentials.updated', [
-            'provider' => SonaliPaymentGateway::PROVIDER,
+            'provider' => $provider,
 
             // Field NAMES, never values.
             'fields' => array_keys($clean),
@@ -188,7 +287,7 @@ class GatewayConfigurator
     public function disable(Tenant $tenant, string $source): void
     {
         $found = $tenant->run(function () {
-            $credential = GatewayCredential::where('provider', SonaliPaymentGateway::PROVIDER)->first();
+            $credential = GatewayCredential::query()->orderByDesc('is_active')->first();
 
             if (! $credential) {
                 return false;
@@ -203,15 +302,13 @@ class GatewayConfigurator
             throw new DomainException('Nothing to disable: no gateway is configured.');
         }
 
-        $this->record($tenant, 'gateway.credentials.disabled', [
-            'provider' => SonaliPaymentGateway::PROVIDER,
-        ], $source);
+        $this->record($tenant, 'gateway.credentials.disabled', [], $source);
     }
 
     public function enable(Tenant $tenant, string $source): void
     {
         $found = $tenant->run(function () {
-            $credential = GatewayCredential::where('provider', SonaliPaymentGateway::PROVIDER)->first();
+            $credential = GatewayCredential::query()->orderByDesc('updated_at')->first();
 
             if (! $credential) {
                 return false;
@@ -226,9 +323,7 @@ class GatewayConfigurator
             throw new DomainException('There are no credentials to enable. Set them first.');
         }
 
-        $this->record($tenant, 'gateway.credentials.enabled', [
-            'provider' => SonaliPaymentGateway::PROVIDER,
-        ], $source);
+        $this->record($tenant, 'gateway.credentials.enabled', [], $source);
     }
 
     /**

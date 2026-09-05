@@ -33,16 +33,29 @@ class GatewayController extends Controller
     {
         $record = Tenant::findOrFail($tenant);
 
+        /*
+         * The provider is validated FIRST and on its own, because every other
+         * rule below depends on which one it is - the two routes to Sonali take
+         * different fields, and validating against the wrong set would reject
+         * correct input and accept absent input.
+         */
+        $provider = (string) $request->input('provider');
+
+        $request->validate([
+            'provider' => ['required', 'in:'.implode(',', array_keys(GatewayConfigurator::PROVIDERS))],
+        ]);
+
         $rules = ['ar_account_confirm' => ['required', 'string']];
 
-        foreach (array_keys(GatewayConfigurator::FIELDS) as $field) {
-            $rules[$field] = ['required', 'string', 'max:255'];
-        }
+        foreach (GatewayConfigurator::fieldsFor($provider) as $field => $meta) {
+            $required = ($meta['optional'] ?? false) ? 'nullable' : 'required';
 
-        // URLs validated as URLs: a redirect base that is not one fails at the
-        // worst moment, which is a member mid-payment.
-        $rules['api_base_url'] = ['required', 'url', 'max:255'];
-        $rules['redirect_base_url'] = ['required', 'url', 'max:255'];
+            // URLs validated as URLs: a base that is not one fails at the worst
+            // possible moment, which is a member mid-payment.
+            $rules[$field] = str_ends_with($field, '_url')
+                ? [$required, 'url', 'max:255']
+                : [$required, 'string', 'max:255'];
+        }
 
         $validated = $request->validate($rules, [
             'ar_account_confirm.required' => 'Type the AR account a second time. It is where the money lands.',
@@ -51,6 +64,7 @@ class GatewayController extends Controller
         try {
             $this->gateways->store(
                 $record,
+                $provider,
                 $validated,
                 'web',
                 $validated['ar_account_confirm'],

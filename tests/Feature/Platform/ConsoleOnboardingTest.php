@@ -7,6 +7,9 @@ namespace Tests\Feature\Platform;
 use App\Models\Operator;
 use App\Models\OperatorAuditLog;
 use App\Models\Tenant\GatewayCredential;
+use App\Services\Gateways\FakePaymentGateway;
+use App\Services\Gateways\GatewayRegistry;
+use App\Services\Gateways\PayflexSpgGateway;
 use App\Services\Gateways\SonaliPaymentGateway;
 use App\Services\TenantReadiness;
 use App\Services\Totp;
@@ -34,6 +37,16 @@ use Tests\TenantTestCase;
  */
 class ConsoleOnboardingTest extends TenantTestCase
 {
+    private const PAYFLEX = [
+        'payflex_base_url' => 'https://payflex.example.test',
+        'payflex_username' => 'bcs-client',
+        'payflex_password' => 'payflex-secret-value',
+        'spg_user' => 'assoc-merchant',
+        'spg_password' => 'spg-secret-value',
+        'ar_account' => '00987654321098',
+        'party_name' => 'Demo Association',
+    ];
+
     private const CREDENTIALS = [
         'api_base_url' => 'https://sandbox.example.test/api',
         'redirect_base_url' => 'https://pay.example.test/return',
@@ -91,11 +104,13 @@ class ConsoleOnboardingTest extends TenantTestCase
         ])->assertRedirect('/platform');
     }
 
-    private function configure(array $overrides = []): \Illuminate\Testing\TestResponse
+    private function configure(array $overrides = [], string $provider = 'spg'): \Illuminate\Testing\TestResponse
     {
-        $payload = array_merge(self::CREDENTIALS, $overrides);
+        $base = $provider === 'payflex_spg' ? self::PAYFLEX : self::CREDENTIALS;
+        $payload = array_merge($base, $overrides);
 
         return $this->post("/platform/tenants/{$this->slug()}/gateway", $payload + [
+            'provider' => $provider,
             'ar_account_confirm' => $payload['ar_account'],
         ]);
     }
@@ -153,6 +168,7 @@ class ConsoleOnboardingTest extends TenantTestCase
         $this->signIn($this->operator());
 
         $this->post("/platform/tenants/{$this->slug()}/gateway", self::CREDENTIALS + [
+            'provider' => 'spg',
             'ar_account_confirm' => '00123456789013',
         ])->assertSessionHasErrors('gateway');
 
@@ -225,6 +241,144 @@ class ConsoleOnboardingTest extends TenantTestCase
 
         $this->post("/platform/tenants/{$this->slug()}/gateway/toggle", ['action' => 'disable'])
             ->assertSessionHasErrors('gateway');
+    }
+
+    // -------------------------------------------------------------- payflex
+
+    /**
+     * The second route to the same bank.
+     *
+     * `SonaliPaymentGateway` talks to SPG's v2 API directly; `PayflexSpgGateway`
+     * talks to PayFlex, which talks to SPG v3. Which one an association uses is
+     * its own setting, so one can be moved and proved while the rest stay put.
+     */
+    public function test_an_association_can_be_configured_for_payflex(): void
+    {
+        $this->signIn($this->operator());
+
+        $this->configure([], 'payflex_spg')
+            ->assertRedirect(route('platform.tenant', $this->slug()));
+
+        $stored = $this->inTenant(
+            fn () => GatewayCredential::where('provider', 'payflex_spg')->first()
+        );
+
+        $this->assertNotNull($stored);
+        $this->assertTrue((bool) $stored->is_active);
+
+        // The association's OWN merchant credentials travel with it. Without
+        // them PayFlex falls back to its own account, which would collect this
+        // association's money into somebody else's.
+        $this->assertSame('assoc-merchant', $stored->credential('spg_user'));
+        $this->assertSame('spg-secret-value', $stored->credential('spg_password'));
+    }
+
+    /**
+     * EXACTLY ONE ACTIVE GATEWAY.
+     *
+     * Two would make "which gateway is this association using" depend on row
+     * order, which is how an association ends up collecting through the
+     * provider it thought it had left.
+     */
+    public function test_switching_provider_leaves_only_one_active(): void
+    {
+        $this->signIn($this->operator());
+
+        $this->configure();                       // direct
+        $this->configure([], 'payflex_spg');      // then PayFlex
+
+        $rows = $this->inTenant(fn () => GatewayCredential::get());
+
+        $this->assertCount(2, $rows, 'The old configuration is kept, not deleted.');
+        $this->assertSame(['payflex_spg'], $rows->where('is_active', true)->pluck('provider')->all());
+
+        // And it is still there to switch back to, without retyping.
+        $this->assertSame(
+            'merchant-secret-value',
+            $rows->firstWhere('provider', 'spg')->credential('password')
+        );
+    }
+
+    public function test_the_registry_picks_the_adapter_the_association_configured(): void
+    {
+        $this->signIn($this->operator());
+        $this->configure([], 'payflex_spg');
+
+        config(['services.gateway.driver' => 'auto']);
+
+        $this->inTenant(function () {
+            $this->assertInstanceOf(PayflexSpgGateway::class, app(GatewayRegistry::class)->active());
+        });
+    }
+
+    /**
+     * The default takes no real money.
+     *
+     * `PAYMENT_GATEWAY=fake` wins over whatever an association has configured,
+     * so an environment nobody has thought about cannot collect.
+     */
+    public function test_the_fake_driver_overrides_a_configured_association(): void
+    {
+        $this->signIn($this->operator());
+        $this->configure([], 'payflex_spg');
+
+        config(['services.gateway.driver' => 'fake']);
+
+        $this->inTenant(function () {
+            $this->assertInstanceOf(FakePaymentGateway::class, app(GatewayRegistry::class)->active());
+        });
+    }
+
+    /**
+     * An unknown provider must not fall through to somebody else's adapter.
+     *
+     * A downgrade, or a hand-edited row, should stop payment — not route this
+     * association's money through whichever gateway happened to be first.
+     */
+    public function test_an_unknown_provider_falls_back_to_the_fake(): void
+    {
+        config(['services.gateway.driver' => 'auto']);
+
+        $this->assertInstanceOf(
+            FakePaymentGateway::class,
+            app(GatewayRegistry::class)->for('some_gateway_that_does_not_exist')
+        );
+    }
+
+    public function test_payflex_fields_are_required_and_spg_fields_are_not_asked_for(): void
+    {
+        $this->signIn($this->operator());
+
+        // An SPG payload submitted as PayFlex is missing everything PayFlex needs.
+        $this->post("/platform/tenants/{$this->slug()}/gateway", self::CREDENTIALS + [
+            'provider' => 'payflex_spg',
+            'ar_account_confirm' => self::CREDENTIALS['ar_account'],
+        ])->assertSessionHasErrors(['payflex_base_url', 'payflex_username', 'spg_user']);
+    }
+
+    /** Optional means optional: a blank party name is not a refusal. */
+    public function test_the_optional_party_name_can_be_left_out(): void
+    {
+        $this->signIn($this->operator());
+
+        $this->configure(['party_name' => ''], 'payflex_spg')
+            ->assertRedirect(route('platform.tenant', $this->slug()));
+
+        $stored = $this->inTenant(fn () => GatewayCredential::where('provider', 'payflex_spg')->first());
+
+        $this->assertNull($stored->credential('party_name'));
+    }
+
+    public function test_a_provider_nobody_offers_is_refused(): void
+    {
+        $this->signIn($this->operator());
+
+        $this->configure([], 'spg')->assertRedirect();
+
+        $this->post("/platform/tenants/{$this->slug()}/gateway", self::CREDENTIALS + [
+            'provider' => 'bkash',
+            'ar_account_confirm' => self::CREDENTIALS['ar_account'],
+        ])->assertSessionHasErrors('provider');
     }
 
     // ---------------------------------------------------------- the checklist

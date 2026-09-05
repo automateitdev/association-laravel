@@ -25,6 +25,9 @@ use Illuminate\Support\Str;
  */
 class FakePaymentGateway implements PaymentGateway
 {
+    /** Named like the others so GatewayRegistry can key on it. */
+    public const PROVIDER = 'fake';
+
     /** @var array<string, GatewayVerification> */
     private array $results = [];
 
@@ -32,7 +35,7 @@ class FakePaymentGateway implements PaymentGateway
 
     public function name(): string
     {
-        return 'fake';
+        return self::PROVIDER;
     }
 
     public function createSession(PaymentInfo $payment, string $returnUrl): GatewaySession

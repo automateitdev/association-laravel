@@ -116,6 +116,54 @@ class GatewayService
     }
 
     /**
+     * An unsigned notice that an invoice is worth asking about.
+     *
+     * FOR PAYFLEX, WHICH SIGNS NOTHING. It posts its result to us with
+     * `Http::post($url, $payload)` and no signature, so `handleCallback` would
+     * refuse it - correctly, since for a gateway that DOES sign, an unsigned
+     * callback is a forgery.
+     *
+     * A SEPARATE ENTRY POINT RATHER THAN A FLAG. Adding "skip the signature" to
+     * `handleCallback` would put that switch one bad merge away from the signed
+     * gateways, and a signature check that can be turned off by a request is not
+     * a signature check. This method is reachable only from the PayFlex route.
+     *
+     * WHAT MAKES IT SAFE is that the body is not evidence of anything. The ONLY
+     * thing taken from it is an invoice number - not an amount, not a status,
+     * not a transaction id - and then we ask the gateway ourselves, over an
+     * authenticated request, and act on that answer. An attacker who guesses the
+     * URL and posts an invoice number achieves exactly one thing: we look up a
+     * payment we already have and ask the gateway about it, which we would have
+     * done anyway on the reconciliation sweep.
+     */
+    public function handleUnsignedNotice(string $reference, array $payload = []): string
+    {
+        $event = GatewayEvent::create([
+            'provider' => $this->gateway->name(),
+            'event_type' => 'callback',
+            'reference' => $reference,
+            'payload' => $payload,
+            'received_at' => now(),
+        ]);
+
+        $payment = PaymentInfo::query()->where('gateway_reference', $reference)->first();
+
+        if (! $payment) {
+            $event->update(['processing_error' => "No payment matches reference {$reference}."]);
+
+            throw new \DomainException("No payment matches gateway reference {$reference}.");
+        }
+
+        $event->update(['payment_info_id' => $payment->id]);
+
+        $outcome = $this->apply($payment, $this->gateway->verify($reference));
+
+        $event->update(['processed_at' => now()]);
+
+        return $outcome;
+    }
+
+    /**
      * Reconciliation fallback.
      *
      * If R-5 resolves badly and this merchant account cannot deliver

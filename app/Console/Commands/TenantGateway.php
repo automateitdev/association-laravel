@@ -29,6 +29,7 @@ class TenantGateway extends Command
 {
     protected $signature = 'tenant:gateway
         {slug : The association to configure}
+        {--provider= : spg (direct) or payflex_spg (through PayFlex)}
         {--show : Print what is configured, without changing it}
         {--disable : Stop taking online payment, leaving the credentials in place}
         {--enable : Resume with the credentials already stored}';
@@ -71,7 +72,7 @@ class TenantGateway extends Command
             return self::SUCCESS;
         }
 
-        $this->line('  Provider:   '.$summary['provider']);
+        $this->line('  Provider:   '.$summary['label'].' ('.$summary['provider'].')');
         $this->line('  Active:     '.($summary['is_active'] ? 'yes' : 'no'));
 
         // The last four only, here as everywhere else. A command that printed a
@@ -99,6 +100,34 @@ class TenantGateway extends Command
         $existing = $gateways->summary($tenant);
 
         $this->line("Configuring the payment gateway for [{$tenant->getKey()}].");
+        $this->newLine();
+
+        /*
+         * Asked, not defaulted. There are two routes to the same bank now, they
+         * take different credentials, and guessing one for somebody would mean
+         * eight fields typed into the wrong form before anything said so.
+         */
+        $provider = (string) ($this->option('provider') ?: $this->choice(
+            'Which gateway?',
+            collect(GatewayConfigurator::PROVIDERS)->map(fn ($p) => $p['label'])->all(),
+            $existing['provider'] ?? 'spg',
+        ));
+
+        // `choice` hands back the label when the keys are strings, so map back.
+        if (! isset(GatewayConfigurator::PROVIDERS[$provider])) {
+            $provider = collect(GatewayConfigurator::PROVIDERS)
+                ->search(fn ($p) => $p['label'] === $provider) ?: $provider;
+        }
+
+        if (! isset(GatewayConfigurator::PROVIDERS[$provider])) {
+            $this->error("There is no gateway called '{$provider}'.");
+
+            return self::FAILURE;
+        }
+
+        $this->newLine();
+        $this->comment('  '.GatewayConfigurator::PROVIDERS[$provider]['blurb']);
+        $this->newLine();
 
         if ($existing) {
             $this->warn('A gateway is already configured. Continuing REPLACES every field.');
@@ -114,14 +143,16 @@ class TenantGateway extends Command
 
         // Driven by the service's field list, so a field added there is asked
         // for here without anybody having to remember to add it twice.
-        foreach (GatewayConfigurator::FIELDS as $field => $meta) {
+        foreach (GatewayConfigurator::fieldsFor($provider) as $field => $meta) {
             if (isset($meta['help'])) {
                 $this->comment('  '.$meta['help']);
             }
 
+            $label = $meta['label'].(($meta['optional'] ?? false) ? ' (optional)' : '');
+
             $values[$field] = $meta['secret']
-                ? (string) $this->secret($meta['label'])
-                : (string) $this->ask($meta['label']);
+                ? (string) $this->secret($label)
+                : (string) $this->ask($label);
         }
 
         /*
@@ -133,7 +164,7 @@ class TenantGateway extends Command
         $this->newLine();
         $confirm = (string) $this->ask('Type the AR account again to confirm');
 
-        $gateways->store($tenant, $values, 'console', $confirm);
+        $gateways->store($tenant, $provider, $values, 'console', $confirm);
 
         $this->newLine();
         $this->info('Gateway configured.');

@@ -33,6 +33,10 @@ Route::middleware(['web', 'platform'])->prefix('platform')->name('platform.')->g
         Route::get('/', [PlatformController::class, 'index'])->name('index');
         Route::get('/audit', [PlatformController::class, 'audit'])->name('audit');
 
+        // Before the {tenant} route, or "new" is read as an association id.
+        Route::get('/tenants/new', [PlatformController::class, 'create'])->name('tenant.create');
+        Route::post('/tenants', [PlatformController::class, 'store'])->name('tenant.store');
+
         Route::get('/tenants/{tenant}', [PlatformController::class, 'show'])->name('tenant');
 
         // Suspend, reinstate, archive - one endpoint, because they share the

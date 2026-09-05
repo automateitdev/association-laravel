@@ -10,6 +10,7 @@ use App\Models\Tenant;
 use App\Models\TenantProvisioningRun;
 use App\Models\TenantSnapshot;
 use App\Services\PlatformService;
+use App\Services\TenantProvisioner;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
@@ -38,7 +39,10 @@ use Illuminate\View\View;
  */
 class PlatformController extends Controller
 {
-    public function __construct(private readonly PlatformService $platform) {}
+    public function __construct(
+        private readonly PlatformService $platform,
+        private readonly TenantProvisioner $provisioner,
+    ) {}
 
     /**
      * The overview: platform totals, and what needs attention.
@@ -118,6 +122,79 @@ class PlatformController extends Controller
         return redirect()
             ->route('platform.tenant', $record->getKey())
             ->with('status', "{$record->getKey()} is now {$result->status}.");
+    }
+
+    public function create(): View
+    {
+        return view('platform.new');
+    }
+
+    /**
+     * Provision an association (FR-PLT-1).
+     *
+     * Runs the same TenantProvisioner the CLI runs. That matters more here than
+     * anywhere else in this controller: provisioning creates a database and a
+     * scoped MySQL user, and a second implementation of its rollback would be
+     * a way to leave orphans that block the next attempt on the same slug.
+     *
+     * NO CONFIRMATION FIELD, unlike the lifecycle actions. Those act on an
+     * association that already exists and are chosen from a list of similar
+     * rows; this one is typed from scratch, and asking somebody to retype what
+     * they just typed adds ceremony without adding a check.
+     */
+    public function store(Request $request): RedirectResponse
+    {
+        $validated = $request->validate([
+            /*
+             * The slug is IMMUTABLE once set: it becomes the database name and
+             * the code members type into the app. Validated to the same rule
+             * the provisioner enforces, so the form refuses before a run is
+             * even opened rather than after.
+             */
+            'slug' => ['required', 'string', 'regex:/^[a-z][a-z0-9-]{1,49}$/'],
+            'name' => ['required', 'string', 'max:255'],
+            'legal_name' => ['nullable', 'string', 'max:255'],
+            'domain' => ['nullable', 'string', 'max:255'],
+            'admin_name' => ['nullable', 'string', 'max:255'],
+            'admin_email' => ['nullable', 'email', 'max:255'],
+            'locale' => ['nullable', 'string', 'max:5'],
+            'timezone' => ['nullable', 'string', 'max:64'],
+            'currency' => ['nullable', 'string', 'max:3'],
+        ], [
+            'slug.regex' => 'The id must be lowercase letters, digits and hyphens, 2-50 characters, starting with a letter.',
+        ]);
+
+        $result = $this->provisioner->provision($validated);
+
+        if (! $result->ok) {
+            return back()
+                ->withErrors([
+                    'slug' => $result->attempted
+                        // Say that it was undone. "Failed" alone leaves somebody
+                        // wondering whether a half-made database is now in the way.
+                        ? "Provisioning failed and was rolled back: {$result->error} ({$result->rollbackNotes})"
+                        : $result->error,
+                ])
+                ->withInput();
+        }
+
+        OperatorAuditLog::record(
+            action: 'tenant.provisioned',
+            tenantId: $result->tenant->getKey(),
+            after: ['domain' => $result->domain, 'name' => $result->tenant->name],
+            source: 'web',
+        );
+
+        return redirect()
+            ->route('platform.tenant', $result->tenant->getKey())
+            ->with('status', "{$result->tenant->name} is active at {$result->domain}.")
+            /*
+             * Flashed, so it appears exactly once and never lands in a URL or
+             * the audit log. It is not a password - it lets the association's
+             * first administrator set one nobody else has seen, including us.
+             */
+            ->with('setup_token', $result->setupToken)
+            ->with('setup_email', $validated['admin_email'] ?? null);
     }
 
     /** FR-PLT-2. */

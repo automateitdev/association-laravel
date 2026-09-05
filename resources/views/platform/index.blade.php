@@ -70,22 +70,22 @@
         </tbody>
     </table>
 
-    {{--
-      Creating an association is deliberately not a button here. Provisioning
-      creates a database and a scoped database user, and it is all-or-nothing;
-      it belongs at the server where the person running it can see the failure
-      and the rollback. The console manages associations that exist.
-    --}}
-    <h2>Creating one</h2>
+    <h2>Adding one</h2>
     <div class="panel">
-        <p style="margin-top: 0;">
-            New associations are provisioned at the server, not from here:
-        </p>
-        <pre>php artisan tenant:provision &lt;slug&gt; --name="Association name" --admin-email=someone@example.org</pre>
-        <p class="muted" style="margin-bottom: 0;">
-            Provisioning creates a database and a scoped database user and rolls the whole
-            thing back if any step fails. That is worth watching happen rather than
-            submitting and hoping.
+        <div class="row">
+            <a href="{{ route('platform.tenant.create') }}">
+                <button type="button" class="primary">New association</button>
+            </a>
+            <span class="muted">
+                Creates a database, a scoped database user, the schema and the first
+                administrator — all-or-nothing, rolled back entirely if any step fails.
+            </span>
+        </div>
+
+        <p class="muted" style="margin-bottom: 0; margin-top: 12px;">
+            The same thing at the server:
+            <code>php artisan tenant:provision &lt;id&gt;</code>. Both call the same
+            provisioner, so they cannot behave differently.
         </p>
     </div>
 @endsection

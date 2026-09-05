@@ -10,6 +10,25 @@
         @if ($tenant->archived_at) · archived {{ $tenant->archived_at->toDayDateTimeString() }} @endif
     </p>
 
+    @if (session('setup_token'))
+        {{--
+          Shown ONCE, immediately after provisioning, and never again: only its
+          hash reaches the database, and it is deliberately absent from the
+          audit log. It is not a password - it lets the association's first
+          administrator choose one that nobody else, including us, has seen.
+        --}}
+        <div class="note">
+            <strong>Setup token for {{ session('setup_email') }} — copy it now.</strong>
+            <p style="margin: 8px 0;">
+                <code style="font-size: 13px; word-break: break-all;">{{ session('setup_token') }}</code>
+            </p>
+            <p class="muted" style="margin: 0; font-size: 12px;">
+                This is the only time it is shown. It is not a password: it lets them set one.
+                If it is lost, no one can recover it — issue a new administrator instead.
+            </p>
+        </div>
+    @endif
+
     <h2>Health</h2>
 
     @if (! ($health['reachable'] ?? false))

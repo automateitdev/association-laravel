@@ -335,6 +335,58 @@ class PlatformConsoleTest extends TestCase
         $this->assertDatabaseHas('tenants', ['id' => $tenant->getKey()]);
     }
 
+    // -------------------------------------------------- provisioning by form
+
+    public function test_the_new_association_form_is_reachable(): void
+    {
+        $this->actingAs($this->operator(), 'operator')
+            ->get('/platform/tenants/new')
+            ->assertOk()
+            ->assertSee('Association id');
+    }
+
+    /**
+     * The slug becomes the database name and the code members type into the
+     * app, so a bad one must be refused by the FORM - before a provisioning run
+     * is opened, not after a database has been half-created.
+     */
+    public function test_an_invalid_id_is_refused_before_anything_is_created(): void
+    {
+        $this->actingAs($this->operator(), 'operator')
+            ->post('/platform/tenants', [
+                'slug' => 'Not A Slug',
+                'name' => 'Bad Id Association',
+            ])
+            ->assertSessionHasErrors('slug');
+
+        $this->assertDatabaseCount('tenants', 0);
+        // Nothing was attempted, so nothing should have been recorded as a run.
+        $this->assertDatabaseCount('tenant_provisioning_runs', 0);
+    }
+
+    public function test_an_id_already_taken_is_refused(): void
+    {
+        $tenant = $this->tenant('taken');
+
+        $this->actingAs($this->operator(), 'operator')
+            ->post('/platform/tenants', [
+                'slug' => $tenant->getKey(),
+                'name' => 'Duplicate',
+            ])
+            ->assertSessionHasErrors('slug');
+
+        $this->assertDatabaseCount('tenants', 1);
+    }
+
+    public function test_the_form_requires_a_name(): void
+    {
+        $this->actingAs($this->operator(), 'operator')
+            ->post('/platform/tenants', ['slug' => 'nameless'])
+            ->assertSessionHasErrors('name');
+
+        $this->assertDatabaseCount('tenants', 0);
+    }
+
     // ------------------------------------------------------------- the pages
 
     public function test_the_overview_totals_come_from_snapshots_not_a_live_query(): void

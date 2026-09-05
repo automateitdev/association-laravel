@@ -21,6 +21,7 @@ use App\Http\Controllers\Api\V1\Staff\ReportController;
 use App\Http\Controllers\Api\V1\Staff\ShareController;
 use App\Http\Controllers\Api\V1\Staff\RoleController;
 use App\Http\Controllers\Api\V1\Staff\UserController;
+use App\Http\Controllers\Api\V1\Staff\VoucherController;
 use App\Http\Controllers\Api\V1\Staff\SettingsController;
 use App\Http\Controllers\Api\V1\TenantLookupController;
 use Illuminate\Support\Facades\Route;
@@ -355,6 +356,32 @@ Route::prefix('v1')->group(function () {
                 ->middleware('permission:profile-updates.view');
             Route::post('/profile-updates/{update}/decide', [ProfileUpdateController::class, 'decide'])
                 ->middleware('permission:profile-updates.decide');
+
+            /*
+             * Vouchers (FR-ACC-4). Drafting and approving are separate
+             * permissions because approval is the moment a person's typing
+             * reaches the ledger - the one control that separation buys.
+             *
+             * There is no route that edits or deletes an approved voucher.
+             * Its entries have been reported on; undoing one means posting a
+             * reversal (FR-ACC-6), which is itself dated and attributable.
+             */
+            Route::get('/vouchers', [VoucherController::class, 'index'])
+                ->middleware('permission:vouchers.view');
+            Route::get('/vouchers/{voucher}', [VoucherController::class, 'show'])
+                ->middleware('permission:vouchers.view');
+
+            Route::post('/vouchers', [VoucherController::class, 'store'])
+                ->middleware('permission:vouchers.create');
+            Route::put('/vouchers/{voucher}', [VoucherController::class, 'update'])
+                ->middleware('permission:vouchers.create');
+            Route::delete('/vouchers/{voucher}', [VoucherController::class, 'destroy'])
+                ->middleware('permission:vouchers.create');
+
+            Route::post('/vouchers/{voucher}/decide', [VoucherController::class, 'decide'])
+                ->middleware('permission:vouchers.approve');
+            Route::post('/vouchers/{voucher}/reverse', [VoucherController::class, 'reverse'])
+                ->middleware('permission:vouchers.approve');
 
             /*
              * Shares (FR-SHR-3). A transfer moves shares between two members

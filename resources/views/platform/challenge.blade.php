@@ -2,7 +2,14 @@
 @section('title', 'Second factor')
 
 @section('content')
-    <div style="max-width: 380px; margin: 60px auto;">
+    <div style="margin: 72px 0;">
+        {{-- Same wordless brand as the sign-in step: one flow, two pages. --}}
+        <div class="row" style="gap: 10px; margin-bottom: 18px;">
+            <span style="width: 30px; height: 30px; border-radius: 8px; background: var(--accent);
+                         color: #fff; display: grid; place-items: center; font-weight: 700;">B</span>
+            <strong style="font-size: 15px;">BCS Platform</strong>
+        </div>
+
         <h1>Second factor</h1>
         <p class="sub">Your password was accepted. One more step.</p>
 

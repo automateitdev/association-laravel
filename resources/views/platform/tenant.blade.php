@@ -1,6 +1,11 @@
 @extends('platform.layout')
 @section('title', $tenant->name)
 
+@section('crumb')
+    <a href="{{ route('platform.index') }}">Associations</a>
+    <span class="muted"> / </span>{{ $tenant->getKey() }}
+@endsection
+
 @section('content')
     <h1>{{ $tenant->name }}</h1>
     <p class="sub">

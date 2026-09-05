@@ -13,6 +13,13 @@
 
 @section('title', 'Break-glass · '.$tenant->getKey())
 
+@section('crumb')
+    <a href="{{ route('platform.index') }}">Associations</a>
+    <span class="muted"> / </span>
+    <a href="{{ route('platform.tenant', $tenant->getKey()) }}">{{ $tenant->getKey() }}</a>
+    <span class="muted"> / </span>{{ $area }}
+@endsection
+
 @section('content')
     <h1>{{ $tenant->name }} · {{ $area }}</h1>
 

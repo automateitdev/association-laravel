@@ -1,6 +1,11 @@
 @extends('platform.layout')
 @section('title', 'New association')
 
+@section('crumb')
+    <a href="{{ route('platform.index') }}">Associations</a>
+    <span class="muted"> / </span>New
+@endsection
+
 @section('content')
     <h1>New association</h1>
     <p class="sub">Creates a database, a scoped database user, the schema, and the first administrator.</p>

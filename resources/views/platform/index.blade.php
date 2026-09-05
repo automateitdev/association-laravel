@@ -1,6 +1,15 @@
 @extends('platform.layout')
 @section('title', 'Associations')
 
+@section('crumb', 'Associations')
+
+{{-- The primary action lives in the bar, not at the bottom of the page. --}}
+@section('topbar')
+    <a href="{{ route('platform.tenant.create') }}">
+        <button type="button" class="primary">New association</button>
+    </a>
+@endsection
+
 @section('content')
     <h1>Associations</h1>
     <p class="sub">
@@ -86,6 +95,7 @@
         @endif
     </form>
 
+    <div class="scroll-x">
     <table>
         <thead>
         <tr>
@@ -146,20 +156,17 @@
         @endforelse
         </tbody>
     </table>
+    </div>
 
     <h2>Adding one</h2>
     <div class="panel">
-        <div class="row">
-            <a href="{{ route('platform.tenant.create') }}">
-                <button type="button" class="primary">New association</button>
-            </a>
-            <span class="muted">
-                Creates a database, a scoped database user, the schema and the first
-                administrator — all-or-nothing, rolled back entirely if any step fails.
-            </span>
-        </div>
+        <p class="muted" style="margin-top: 0;">
+            <strong>New association</strong>, in the bar above. Creates a database, a scoped
+            database user, the schema and the first administrator — all-or-nothing, rolled back
+            entirely if any step fails.
+        </p>
 
-        <p class="muted" style="margin-bottom: 0; margin-top: 12px;">
+        <p class="muted" style="margin-bottom: 0;">
             The same thing at the server:
             <code>php artisan tenant:provision &lt;id&gt;</code>. Both call the same
             provisioner, so they cannot behave differently.

@@ -535,6 +535,68 @@ class ConsoleOnboardingTest extends TenantTestCase
             ->assertSee($this->slug());
     }
 
+    // --------------------------------------------------------------- the shell
+
+    /**
+     * The sidebar marks where you are.
+     *
+     * Worth a test rather than an eyeball: `routeIs()` patterns are the kind of
+     * thing that silently stops matching when a route is renamed, and the
+     * failure - every item unmarked - looks like a styling choice rather than a
+     * bug.
+     */
+    public function test_the_sidebar_marks_the_section_you_are_in(): void
+    {
+        $this->signIn($this->operator());
+
+        $cases = [
+            '/platform' => 'Associations',
+            "/platform/tenants/{$this->slug()}" => 'Associations',
+            '/platform/break-glass' => 'Break-glass',
+            '/platform/operators' => 'Operators',
+            '/platform/audit' => 'Audit',
+        ];
+
+        foreach ($cases as $url => $expected) {
+            $html = $this->get($url)->assertOk()->getContent();
+
+            preg_match_all('/class="item on"[^>]*>(.*?)<\/a>/s', $html, $matches);
+
+            $marked = array_map(
+                fn ($m) => trim(preg_replace('/<[^>]*>|\s+/', ' ', $m)),
+                $matches[1],
+            );
+
+            $this->assertCount(1, $marked, "{$url} should mark exactly one nav item.");
+            $this->assertStringContainsString($expected, $marked[0], "{$url} marked the wrong item.");
+        }
+    }
+
+    /** An association's page can be left again without the browser's back button. */
+    public function test_a_tenant_page_offers_a_way_back_to_the_list(): void
+    {
+        $this->signIn($this->operator());
+
+        $this->get("/platform/tenants/{$this->slug()}")
+            ->assertOk()
+            ->assertSee($this->slug())
+            ->assertSee('href="'.route('platform.index').'"', false);
+    }
+
+    /**
+     * Signed out, there is nowhere to navigate to — so there is no navigation.
+     *
+     * A sidebar on the sign-in page would advertise the console's shape to
+     * somebody who has not proved they belong in it.
+     */
+    public function test_the_sign_in_page_has_no_navigation(): void
+    {
+        $this->get('/platform/login')
+            ->assertOk()
+            ->assertDontSee('Break-glass')
+            ->assertDontSee('Sign out');
+    }
+
     // ------------------------------------------------------------------ setup
 
     private function seedSuperadmin(): void

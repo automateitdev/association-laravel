@@ -15,6 +15,8 @@
 
 @section('title', 'Break-glass')
 
+@section('crumb', 'Break-glass')
+
 @section('content')
     <h1>Break-glass</h1>
     <p class="sub">

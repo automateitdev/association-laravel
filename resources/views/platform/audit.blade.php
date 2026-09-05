@@ -1,6 +1,8 @@
 @extends('platform.layout')
 @section('title', 'Audit')
 
+@section('crumb', 'Audit')
+
 @section('content')
     <h1>Operator audit</h1>
     <p class="sub">Every action taken by an operator, from the console or the server (FR-PLT-4).</p>

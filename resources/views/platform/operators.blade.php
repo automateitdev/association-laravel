@@ -15,6 +15,8 @@
 
 @section('title', 'Operators')
 
+@section('crumb', 'Operators')
+
 @section('content')
     <h1>Operators</h1>
     <p class="sub">

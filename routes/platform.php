@@ -25,6 +25,14 @@ Route::middleware(['web', 'platform'])->prefix('platform')->name('platform.')->g
     Route::middleware('guest:operator')->group(function () {
         Route::get('/login', [SessionController::class, 'create'])->name('login');
         Route::post('/login', [SessionController::class, 'store'])->name('login.store');
+
+        /*
+         * The second factor. Still `guest`, because the password step
+         * deliberately does NOT sign anybody in - the operator is pending, not
+         * authenticated, until a code is verified.
+         */
+        Route::get('/challenge', [SessionController::class, 'challenge'])->name('challenge');
+        Route::post('/challenge', [SessionController::class, 'verify'])->name('challenge.verify');
     });
 
     Route::middleware('auth:operator')->group(function () {

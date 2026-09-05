@@ -8,6 +8,8 @@ use App\Models\Operator;
 use App\Models\OperatorAuditLog;
 use App\Models\Tenant;
 use App\Models\TenantSnapshot;
+use App\Services\Totp;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -44,17 +46,51 @@ class PlatformConsoleTest extends TestCase
         config(['session.driver' => 'database']);
     }
 
-    private function operator(array $attributes = []): Operator
+    /**
+     * An operator WITH a second factor, because the console refuses one
+     * without. `withMfa: false` builds the un-enrolled case on purpose.
+     */
+    private function operator(array $attributes = [], bool $withMfa = true): Operator
     {
         static $sequence = 0;
         $sequence++;
 
-        return Operator::create(array_merge([
+        $operator = Operator::create(array_merge([
             'name' => "Operator {$sequence}",
             'email' => "operator{$sequence}@platform.test",
             'password' => 'a-long-enough-password',
             'is_active' => true,
         ], $attributes));
+
+        if ($withMfa) {
+            $operator->forceFill([
+                'mfa_secret' => app(Totp::class)->generateSecret(),
+                'mfa_confirmed_at' => now(),
+                'mfa_recovery_codes' => [Hash::make('RECOV-ERY01')],
+            ])->save();
+        }
+
+        return $operator;
+    }
+
+    /** The code their authenticator would be showing right now. */
+    private function currentCode(Operator $operator): string
+    {
+        $totp = app(Totp::class);
+
+        return $totp->codeAt($operator->mfa_secret, intdiv(now()->timestamp, Totp::PERIOD));
+    }
+
+    /** Password step, then code step - the whole two-step sign-in. */
+    private function signIn(Operator $operator): void
+    {
+        $this->post('/platform/login', [
+            'email' => $operator->email,
+            'password' => 'a-long-enough-password',
+        ])->assertRedirect(route('platform.challenge'));
+
+        $this->post('/platform/challenge', ['code' => $this->currentCode($operator)])
+            ->assertRedirect('/platform');
     }
 
     /**
@@ -110,10 +146,7 @@ class PlatformConsoleTest extends TestCase
     {
         $operator = $this->operator();
 
-        $this->post('/platform/login', [
-            'email' => $operator->email,
-            'password' => 'a-long-enough-password',
-        ])->assertRedirect('/platform');
+        $this->signIn($operator);
 
         $this->assertAuthenticatedAs($operator, 'operator');
 
@@ -121,6 +154,135 @@ class PlatformConsoleTest extends TestCase
             'action' => 'operator.signed_in',
             'operator_email' => $operator->email,
         ]);
+    }
+
+    // ------------------------------------------------------- the second factor
+
+    /**
+     * THE PROPERTY THE WHOLE FEATURE RESTS ON. A correct password must not
+     * produce a session. If it did, every check after this point would be
+     * guarding a door that is already open.
+     */
+    public function test_the_password_alone_does_not_sign_anybody_in(): void
+    {
+        $operator = $this->operator();
+
+        $this->post('/platform/login', [
+            'email' => $operator->email,
+            'password' => 'a-long-enough-password',
+        ])->assertRedirect(route('platform.challenge'));
+
+        $this->assertGuest('operator');
+
+        // And the pending state is not a way in either.
+        $this->get('/platform')->assertRedirect('/platform/login');
+    }
+
+    public function test_a_wrong_code_does_not_sign_anybody_in(): void
+    {
+        $operator = $this->operator();
+
+        $this->post('/platform/login', [
+            'email' => $operator->email,
+            'password' => 'a-long-enough-password',
+        ]);
+
+        $this->post('/platform/challenge', ['code' => '000000'])
+            ->assertSessionHasErrors('code');
+
+        $this->assertGuest('operator');
+
+        $this->assertDatabaseHas('operator_audit_logs', [
+            'action' => 'operator.mfa_failed',
+            'operator_email' => $operator->email,
+        ]);
+    }
+
+    /**
+     * A code is valid for a whole 30-second window, so without a replay guard
+     * the same six digits work again - read over a shoulder, or lifted from a
+     * log.
+     */
+    public function test_a_code_cannot_be_used_twice(): void
+    {
+        $operator = $this->operator();
+        $code = $this->currentCode($operator);
+
+        $this->signIn($operator);
+        $this->post('/platform/logout');
+
+        $this->post('/platform/login', [
+            'email' => $operator->email,
+            'password' => 'a-long-enough-password',
+        ]);
+
+        $this->post('/platform/challenge', ['code' => $code])
+            ->assertSessionHasErrors('code');
+
+        $this->assertGuest('operator');
+    }
+
+    public function test_a_recovery_code_works_once_and_is_then_spent(): void
+    {
+        $operator = $this->operator();
+
+        $this->post('/platform/login', [
+            'email' => $operator->email,
+            'password' => 'a-long-enough-password',
+        ]);
+
+        $this->post('/platform/challenge', ['code' => 'RECOV-ERY01'])
+            ->assertRedirect('/platform');
+
+        $this->assertAuthenticatedAs($operator, 'operator');
+        $this->assertSame(0, $operator->fresh()->recoveryCodesRemaining());
+
+        // Recorded distinctly: signing in on a recovery code says somebody has
+        // lost their phone, which is worth seeing in the log.
+        $this->assertDatabaseHas('operator_audit_logs', [
+            'action' => 'operator.signed_in_with_recovery_code',
+        ]);
+
+        $this->post('/platform/logout');
+
+        $this->post('/platform/login', [
+            'email' => $operator->email,
+            'password' => 'a-long-enough-password',
+        ]);
+
+        $this->post('/platform/challenge', ['code' => 'RECOV-ERY01'])
+            ->assertSessionHasErrors('code');
+    }
+
+    /**
+     * Enrolment is at the server. Letting an un-enrolled operator in "for now"
+     * is how a requirement becomes optional in practice - which is the state
+     * this console was already in.
+     */
+    public function test_an_operator_without_a_second_factor_cannot_sign_in(): void
+    {
+        $operator = $this->operator(withMfa: false);
+
+        $this->post('/platform/login', [
+            'email' => $operator->email,
+            'password' => 'a-long-enough-password',
+        ])->assertSessionHasErrors('email');
+
+        $this->assertGuest('operator');
+
+        $this->assertDatabaseHas('operator_audit_logs', [
+            'action' => 'operator.login_refused_no_mfa',
+            'operator_email' => $operator->email,
+        ]);
+    }
+
+    /** The challenge page is not reachable without having proved a password. */
+    public function test_the_challenge_page_is_closed_without_a_pending_sign_in(): void
+    {
+        $this->get('/platform/challenge')->assertRedirect('/platform/login');
+
+        $this->post('/platform/challenge', ['code' => '123456'])
+            ->assertRedirect('/platform/login');
     }
 
     /**
@@ -137,12 +299,7 @@ class PlatformConsoleTest extends TestCase
      */
     public function test_a_signed_in_operator_stays_signed_in_on_the_next_request(): void
     {
-        $operator = $this->operator();
-
-        $this->post('/platform/login', [
-            'email' => $operator->email,
-            'password' => 'a-long-enough-password',
-        ])->assertRedirect('/platform');
+        $this->signIn($this->operator());
 
         // A SEPARATE request, which is where a session that does not persist
         // stops being invisible.

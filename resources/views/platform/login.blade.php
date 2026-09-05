@@ -7,16 +7,14 @@
         <p class="sub">Operator access. Not an association account.</p>
 
         {{--
-          Stated on the login page, not only in the docs. An operator can
-          suspend an association and reach the controls that decide where its
-          payments land; NFR-SEC-5 requires MFA for exactly that reason and it
-          is not built. Whoever signs in should know what is protecting this.
+          The console refuses an operator who has not enrolled, so there is no
+          "set it up later" state to explain here - only where to go if you are
+          the one being refused.
         --}}
-        <div class="note">
-            <strong>No second factor yet.</strong> This is a password login.
-            NFR-SEC-5 requires MFA on operator accounts and it is not built —
-            treat these credentials accordingly.
-        </div>
+        <p class="muted" style="font-size: 12px;">
+            A second factor is required. If you have not enrolled, run
+            <code>php artisan operator:mfa &lt;your email&gt;</code> at the server.
+        </p>
 
         <form method="POST" action="{{ route('platform.login.store') }}" class="panel">
             @csrf

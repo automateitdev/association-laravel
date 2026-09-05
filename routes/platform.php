@@ -2,8 +2,10 @@
 
 declare(strict_types=1);
 
+use App\Http\Controllers\Platform\BreakGlassController;
 use App\Http\Controllers\Platform\PlatformController;
 use App\Http\Controllers\Platform\SessionController;
+use App\Http\Controllers\Platform\TenantDataController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -54,5 +56,30 @@ Route::middleware(['web', 'platform'])->prefix('platform')->name('platform.')->g
 
         Route::post('/tenants/{tenant}/migrate', [PlatformController::class, 'migrate'])
             ->name('tenant.migrate');
+
+        /*
+         * Break-glass (FR-SEC-6).
+         *
+         * The grant routes and the routes that READ an association's data are
+         * kept apart here as well as in the controllers. Everything under
+         * `/break-glass` is about permission and touches no tenant database;
+         * the two under `/tenants/{tenant}/data` are the only addresses in this
+         * application where an operator sees an association's rows, and each
+         * one asks for a live grant before it queries anything.
+         */
+        Route::get('/break-glass', [BreakGlassController::class, 'index'])->name('break-glass');
+        Route::post('/tenants/{tenant}/break-glass', [BreakGlassController::class, 'store'])
+            ->name('break-glass.request');
+        Route::post('/break-glass/{grant}/decide', [BreakGlassController::class, 'decide'])
+            ->name('break-glass.decide');
+        Route::post('/break-glass/{grant}/renotify', [BreakGlassController::class, 'renotify'])
+            ->name('break-glass.renotify');
+        Route::post('/break-glass/{grant}/revoke', [BreakGlassController::class, 'revoke'])
+            ->name('break-glass.revoke');
+
+        Route::get('/tenants/{tenant}/data/members', [TenantDataController::class, 'members'])
+            ->name('tenant.data.members');
+        Route::get('/tenants/{tenant}/data/payments', [TenantDataController::class, 'payments'])
+            ->name('tenant.data.payments');
     });
 });

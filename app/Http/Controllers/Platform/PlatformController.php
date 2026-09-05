@@ -27,9 +27,11 @@ use Illuminate\View\View;
  *
  * WHAT IT DELIBERATELY CANNOT DO
  * ------------------------------
- *   - Read an association's members, payments or ledger. FR-SEC-6 requires a
- *     time-boxed, logged break-glass grant for that, and it is NOT BUILT. The
- *     health figures here are counts and sizes, never rows.
+ *   - Read an association's members, payments or ledger. The health figures
+ *     here are counts and sizes, never rows. Reading a row goes through
+ *     BreakGlassController and TenantDataController instead: requested with a
+ *     reason, approved by a SECOND operator, the association told before it
+ *     opens anything, and expiring on the clock (FR-SEC-6).
  *   - Drop a tenant database. Archiving closes an association and keeps every
  *     record; destroying one is a deliberate act at the server, with a backup
  *     in hand.

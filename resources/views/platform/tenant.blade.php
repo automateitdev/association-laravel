@@ -37,10 +37,9 @@
         </div>
     @else
         {{--
-          Counts and sizes only. Reading an association's members, payments or
-          ledger needs a break-glass grant (FR-SEC-6), which is not built - so
-          this page can tell you an association has 315 members and cannot tell
-          you who any of them are.
+          Counts and sizes only. This page can tell you an association has 315
+          members and cannot tell you who any of them are — reading a row needs
+          a break-glass grant (FR-SEC-6), which is the section below.
         --}}
         <div class="grid">
             <div class="stat"><div class="k">Members</div><div class="v">{{ number_format($health['members']) }}</div></div>
@@ -68,6 +67,75 @@
             outstanding fines {{ number_format((float) $snapshot->outstanding_fines, 2) }}.
         </p>
     @endif
+
+    {{--
+      Break-glass (FR-SEC-6).
+
+      Placed under the health figures on purpose: this is where somebody arrives
+      wanting a row and finds only counts, and it is the moment to say what the
+      route to a row actually is rather than leaving them to go looking for one.
+    --}}
+    <h2>Reading this association's records</h2>
+
+    @php($liveGrants = \App\Models\BreakGlassGrant::where('tenant_id', $tenant->getKey())
+        ->where('requested_by', auth('operator')->id())
+        ->live()->get()->keyBy('scope'))
+
+    <div class="panel">
+        @if ($liveGrants->isNotEmpty())
+            <p style="margin-top: 0;">
+                <strong>You have live access.</strong> Every page you open is recorded, and
+                {{ $tenant->getKey() }}'s superadmins have already been told.
+            </p>
+            <div class="row">
+                @foreach ($liveGrants as $scope => $grant)
+                    <a href="{{ route('platform.tenant.data.'.$scope, $tenant->getKey()) }}">
+                        Read {{ $scope }}
+                    </a>
+                    <span class="muted">(ends {{ $grant->expires_at->diffForHumans() }})</span>
+                @endforeach
+            </div>
+            <hr style="border: 0; border-top: 1px solid var(--line); margin: 16px 0;">
+        @endif
+
+        <p style="margin-top: 0;" class="muted">
+            Read-only, time-boxed, and approved by a second operator before it opens anything.
+            The association's superadmins are emailed and the grant is written into their own
+            audit log — they will know, whether or not anybody tells them.
+        </p>
+
+        <form method="POST" action="{{ route('platform.break-glass.request', $tenant->getKey()) }}">
+            @csrf
+
+            <div class="row" style="align-items: flex-end;">
+                <div style="flex: 0 0 180px;">
+                    <label for="scope">Area</label>
+                    <select id="scope" name="scope">
+                        <option value="members">Members</option>
+                        <option value="payments">Payments</option>
+                    </select>
+                </div>
+
+                <div style="flex: 0 0 180px;">
+                    <label for="minutes">For how long</label>
+                    <select id="minutes" name="minutes">
+                        @foreach (\App\Models\BreakGlassGrant::DURATIONS as $minutes)
+                            <option value="{{ $minutes }}" @selected($minutes === 30)>{{ $minutes }} minutes</option>
+                        @endforeach
+                    </select>
+                </div>
+            </div>
+
+            <label for="reason">Why — the association reads this, word for word</label>
+            <input type="text" id="reason" name="reason" minlength="20" maxlength="500" required
+                   value="{{ old('reason') }}"
+                   placeholder="e.g. Invoice INV-2026-0912 shows completed but the member says no receipt arrived">
+
+            <div style="margin-top: 12px;">
+                <button type="submit" class="primary">Request access</button>
+            </div>
+        </form>
+    </div>
 
     <h2>Lifecycle</h2>
 

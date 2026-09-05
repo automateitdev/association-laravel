@@ -22,8 +22,8 @@ use Stancl\Tenancy\Database\Concerns\CentralConnection;
  *
  * An operator is NOT a member of any association and holds no role inside one.
  * Reading an association's member or money data needs an explicit, logged
- * break-glass grant (FR-SEC-6), which is not built yet - see the platform
- * console's own notes.
+ * break-glass grant (FR-SEC-6) - see BreakGlassService, which refuses to let
+ * one operator both ask for and approve their own.
  */
 class Operator extends Authenticatable
 {

@@ -68,7 +68,13 @@ class OperatorMfa extends Command
         $this->info("Enrolling [{$email}].");
         $this->newLine();
         $this->line('  Secret:  '.trim(chunk_split($secret, 4, ' ')));
-        $this->line('  URI:     '.$totp->uri($secret, $email, config('app.name').' Platform'));
+        /*
+         * `app.name` as it stands, with nothing appended. It is already
+         * "BCS Platform" on this deployment, and the appended word produced
+         * "BCS Platform Platform" - which is display-only, but it is the
+         * label somebody then reads in their authenticator every day.
+         */
+        $this->line('  URI:     '.$totp->uri($secret, $email, (string) config('app.name')));
         $this->newLine();
         $this->comment('  Add it to an authenticator app, then enter the code it shows.');
         $this->newLine();

@@ -97,6 +97,18 @@
         <span class="brand">BCS Platform</span>
         <nav>
             <a href="{{ route('platform.index') }}">Associations</a>
+            {{--
+              Counted in the nav, because an unapproved grant is a colleague
+              waiting mid-incident, and an approval queue nobody looks at is how
+              two-operator approval quietly becomes one-operator approval.
+            --}}
+            @php($pendingGrants = \App\Models\BreakGlassGrant::where('status', 'pending')->count())
+            <a href="{{ route('platform.break-glass') }}">
+                Break-glass
+                @if ($pendingGrants)
+                    <strong>({{ $pendingGrants }})</strong>
+                @endif
+            </a>
             <a href="{{ route('platform.audit') }}">Audit</a>
             <span class="who">{{ auth('operator')->user()->email }}</span>
             <form method="POST" action="{{ route('platform.logout') }}">

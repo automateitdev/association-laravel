@@ -4,11 +4,26 @@
 @section('content')
     <h1>Associations</h1>
     <p class="sub">
-        {{ $tenants->count() }} on this platform ·
-        @foreach ($byStatus as $status => $count)
-            {{ $count }} {{ $status }}@if (! $loop->last), @endif
+        {{ $byStatus->sum() }} on this platform ·
+        @foreach ($byStatus as $state => $count)
+            {{ $count }} {{ $state }}@if (! $loop->last), @endif
         @endforeach
     </p>
+
+    {{--
+      The one line an operator should not have to go looking for. An association
+      can be "active" and still unable to take a payment, so status alone does
+      not answer "is anything wrong" - and a console that makes you open forty
+      pages to find out is one nobody opens at all.
+    --}}
+    @if ($needAttention > 0)
+        <div class="note">
+            <strong>{{ $needAttention }} association{{ $needAttention === 1 ? '' : 's' }}
+            need{{ $needAttention === 1 ? 's' : '' }} attention</strong> — unreachable, or not
+            finished being set up.
+            <a href="{{ route('platform.index', ['status' => 'attention']) }}">Show them</a>.
+        </div>
+    @endif
 
     <h2>Platform totals</h2>
 
@@ -39,6 +54,38 @@
 
     <h2>Every association</h2>
 
+    {{--
+      GET, so a filtered view is a URL somebody can send to a colleague mid
+      incident. Everything here is a plain form: no JavaScript, because this is
+      a table and four controls.
+    --}}
+    <form method="GET" class="row" style="margin-bottom: 14px;">
+        <input type="text" name="q" value="{{ $search }}" placeholder="Name or id"
+               style="max-width: 260px;">
+
+        <select name="status" style="width: auto;">
+            <option value="">Any status</option>
+            <option value="attention" @selected($status === 'attention')>Needs attention</option>
+            @foreach (['active', 'suspended', 'archived', 'provisioning'] as $option)
+                <option value="{{ $option }}" @selected($status === $option)>{{ ucfirst($option) }}</option>
+            @endforeach
+        </select>
+
+        <select name="sort" style="width: auto;">
+            <option value="id" @selected($sort === 'id')>Sort by id</option>
+            <option value="name" @selected($sort === 'name')>Sort by name</option>
+            <option value="members" @selected($sort === 'members')>Most members</option>
+            <option value="size" @selected($sort === 'size')>Largest database</option>
+        </select>
+
+        <button type="submit">Apply</button>
+
+        @if ($search !== '' || $status !== '' || $sort !== 'id')
+            <a href="{{ route('platform.index') }}">Clear</a>
+            <span class="muted">{{ $tenants->count() }} shown</span>
+        @endif
+    </form>
+
     <table>
         <thead>
         <tr>
@@ -47,12 +94,13 @@
             <th class="num">Members</th>
             <th class="num">Completed</th>
             <th class="num">Size</th>
+            <th>Setup</th>
             <th>Onboarded</th>
         </tr>
         </thead>
         <tbody>
         @forelse ($tenants as $tenant)
-            @php($snapshot = $snapshots[$tenant->getKey()] ?? null)
+            @php($snapshot = $snapshots->get($tenant->getKey()))
             <tr>
                 <td>
                     <a href="{{ route('platform.tenant', $tenant->getKey()) }}">{{ $tenant->name }}</a>
@@ -62,10 +110,39 @@
                 <td class="num">{{ $snapshot ? number_format($snapshot->members) : '—' }}</td>
                 <td class="num">{{ $snapshot ? number_format($snapshot->completed_payments) : '—' }}</td>
                 <td class="num">{{ $snapshot ? $snapshot->database_size_mb.' MB' : '—' }}</td>
+                <td>
+                    {{--
+                      From the snapshot, not asked live: one connection swap per
+                      row would make this list cost forty database connections
+                      to render. Named rather than shown as a bare count, since
+                      "no administrator" and "no fee heads" are not the same
+                      news.
+                    --}}
+                    @if (! $snapshot)
+                        <span class="muted">not collected</span>
+                    @elseif ($snapshot->error)
+                        <span class="pill suspended">unreachable</span>
+                    @elseif ($snapshot->blocking_issues > 0)
+                        <span class="pill suspended">{{ implode(', ', array_slice($snapshot->unmetChecks(), 0, 2)) }}</span>
+                    @elseif ($unmet = $snapshot->unmetChecks())
+                        <span class="muted">{{ implode(', ', array_slice($unmet, 0, 2)) }}</span>
+                    @else
+                        <span class="pill active">ready</span>
+                    @endif
+                </td>
                 <td>{{ $tenant->onboarded_at?->toDateString() ?? '—' }}</td>
             </tr>
         @empty
-            <tr><td colspan="6" class="muted">No associations yet. Create one with <code>php artisan tenant:provision &lt;slug&gt;</code>.</td></tr>
+            <tr>
+                <td colspan="7" class="muted">
+                    @if ($search !== '' || $status !== '')
+                        Nothing matches that.
+                        <a href="{{ route('platform.index') }}">Clear the filters</a>.
+                    @else
+                        No associations yet. Add one below.
+                    @endif
+                </td>
+            </tr>
         @endforelse
         </tbody>
     </table>

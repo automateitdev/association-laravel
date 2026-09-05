@@ -109,6 +109,7 @@
                     <strong>({{ $pendingGrants }})</strong>
                 @endif
             </a>
+            <a href="{{ route('platform.operators') }}">Operators</a>
             <a href="{{ route('platform.audit') }}">Audit</a>
             <span class="who">{{ auth('operator')->user()->email }}</span>
             <form method="POST" action="{{ route('platform.logout') }}">

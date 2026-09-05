@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Http\Controllers\Platform\BreakGlassController;
+use App\Http\Controllers\Platform\GatewayController;
 use App\Http\Controllers\Platform\PlatformController;
 use App\Http\Controllers\Platform\SessionController;
 use App\Http\Controllers\Platform\TenantDataController;
@@ -43,6 +44,14 @@ Route::middleware(['web', 'platform'])->prefix('platform')->name('platform.')->g
         Route::get('/', [PlatformController::class, 'index'])->name('index');
         Route::get('/audit', [PlatformController::class, 'audit'])->name('audit');
 
+        /*
+         * Read-only, and deliberately so. Accounts are created and second
+         * factors enrolled at the server (`operator:create`, `operator:mfa`):
+         * a console that could mint its own users would make one stolen
+         * session permanent.
+         */
+        Route::get('/operators', [PlatformController::class, 'operators'])->name('operators');
+
         // Before the {tenant} route, or "new" is read as an association id.
         Route::get('/tenants/new', [PlatformController::class, 'create'])->name('tenant.create');
         Route::post('/tenants', [PlatformController::class, 'store'])->name('tenant.store');
@@ -76,6 +85,20 @@ Route::middleware(['web', 'platform'])->prefix('platform')->name('platform.')->g
             ->name('break-glass.renotify');
         Route::post('/break-glass/{grant}/revoke', [BreakGlassController::class, 'revoke'])
             ->name('break-glass.revoke');
+
+        /*
+         * The payment gateway (FR-PAY-11).
+         *
+         * An operator surface, not the association's: `ar_account` is where
+         * their money lands, and it used to be editable by anybody holding
+         * `settings.edit`. There is no GET here on purpose - the credentials
+         * are write-only, so there is no form to pre-fill and no screen that
+         * could render one back.
+         */
+        Route::post('/tenants/{tenant}/gateway', [GatewayController::class, 'store'])
+            ->name('tenant.gateway');
+        Route::post('/tenants/{tenant}/gateway/toggle', [GatewayController::class, 'toggle'])
+            ->name('tenant.gateway.toggle');
 
         Route::get('/tenants/{tenant}/data/members', [TenantDataController::class, 'members'])
             ->name('tenant.data.members');

@@ -29,6 +29,57 @@
         </div>
     @endif
 
+    {{--
+      What is still missing, before anything else on the page.
+
+      Provisioning succeeding and the association WORKING are different things,
+      and the gap between them used to be discovered by an officer three weeks
+      later. Blocking items are separated from advisory ones on purpose: an
+      association with no fee heads yet is fine, one nobody can administer is
+      not, and a single undifferentiated list of warnings is how the second ends
+      up sitting underneath the first.
+    --}}
+    <h2>Setup</h2>
+
+    @if ($readiness['ready'])
+        <div class="flash">
+            <strong>Ready.</strong> Nothing is blocking this association from being used.
+        </div>
+    @else
+        <div class="errors">
+            <strong>{{ $readiness['blocking'] }} thing{{ $readiness['blocking'] === 1 ? '' : 's' }}
+            stop{{ $readiness['blocking'] === 1 ? 's' : '' }} this association working.</strong>
+        </div>
+    @endif
+
+    <table>
+        <tbody>
+        @foreach ($readiness['checks'] as $check)
+            <tr>
+                <td style="width: 30px;">
+                    @if ($check['ok'])
+                        <span style="color: var(--ok);">&check;</span>
+                    @else
+                        <span style="color: {{ $check['blocking'] ? 'var(--danger)' : 'var(--warn)' }};">&times;</span>
+                    @endif
+                </td>
+                <td>
+                    {{ $check['label'] }}
+                    @if (! $check['ok'] && ! $check['blocking'])
+                        <span class="muted">(advisory)</span>
+                    @endif
+                    <div class="muted" style="font-size: 12px;">{{ $check['detail'] }}</div>
+
+                    {{-- The fix, on the row, so "what now" is not a second question. --}}
+                    @if (! $check['ok'])
+                        <div style="font-size: 12px; margin-top: 2px;">{{ $check['fix'] }}</div>
+                    @endif
+                </td>
+            </tr>
+        @endforeach
+        </tbody>
+    </table>
+
     <h2>Health</h2>
 
     @if (! ($health['reachable'] ?? false))
@@ -69,11 +120,115 @@
     @endif
 
     {{--
+      The payment gateway (FR-PAY-11).
+
+      An operator surface, not the association's. `ar_account` is where their
+      money lands, and it used to be editable by anybody in the association
+      holding `settings.edit` - a permission given to treasurers for editing
+      fine rates.
+
+      NOTHING IS PRE-FILLED, and there is no "edit" that keeps the fields you
+      are not changing. The credentials are write-only: no part of this
+      application reads a merchant password back out, and a form that rendered
+      one into an HTML input would have undone the reason this moved. Retyping
+      eight fields is the correct cost for an action this rare.
+    --}}
+    <h2>Payment gateway</h2>
+
+    <div class="panel">
+        @if ($gateway['unreachable'] ?? false)
+            {{-- Not "no gateway": saying that about a database nobody can
+                 reach invites somebody to configure a second one. --}}
+            <div class="errors">
+                <strong>Cannot tell.</strong> This association's database did not answer, so
+                whether a gateway is configured is unknown. Fix the database first.
+            </div>
+        @elseif ($gateway)
+            <div class="row" style="justify-content: space-between; margin-bottom: 12px;">
+                <div>
+                    <strong>{{ $gateway['provider'] }}</strong>
+                    <span class="pill {{ $gateway['is_active'] ? 'active' : 'suspended' }}">
+                        {{ $gateway['is_active'] ? 'active' : 'switched off' }}
+                    </span>
+                    <div class="muted" style="font-size: 12px;">
+                        Money lands in an account ending <strong>{{ $gateway['ar_account_last4'] }}</strong> ·
+                        set {{ $gateway['updated_at'] }}
+                    </div>
+                </div>
+
+                <form method="POST" action="{{ route('platform.tenant.gateway.toggle', $tenant->getKey()) }}">
+                    @csrf
+                    <input type="hidden" name="action" value="{{ $gateway['is_active'] ? 'disable' : 'enable' }}">
+                    <button type="submit">
+                        {{ $gateway['is_active'] ? 'Stop taking online payment' : 'Resume online payment' }}
+                    </button>
+                </form>
+            </div>
+
+            <div class="note">
+                Only the last four digits are ever shown, here or anywhere else. Replacing the
+                configuration below <strong>overwrites every field</strong> — there is nothing to
+                read back, so a partial edit is not possible.
+            </div>
+        @else
+            <div class="note" style="margin-bottom: 12px;">
+                <strong>No gateway configured.</strong> Online payment cannot be taken. Counter
+                collection and bank transfer still work, so this is not urgent unless the
+                association expects to take card payments.
+            </div>
+        @endif
+
+        <form method="POST" action="{{ route('platform.tenant.gateway', $tenant->getKey()) }}"
+              autocomplete="off">
+            @csrf
+
+            @foreach (\App\Services\GatewayConfigurator::FIELDS as $field => $meta)
+                <label for="gw-{{ $field }}">{{ $meta['label'] }}</label>
+                @isset($meta['help'])
+                    <div class="muted" style="font-size: 12px; margin-bottom: 4px;">{{ $meta['help'] }}</div>
+                @endisset
+                {{--
+                  `type=password` on the secrets so a shoulder cannot read them,
+                  and autocomplete off throughout: a browser offering to save a
+                  merchant password is a copy of it nobody decided to make.
+                --}}
+                <input type="{{ $meta['secret'] ? 'password' : 'text' }}"
+                       id="gw-{{ $field }}" name="{{ $field }}" required
+                       autocomplete="off" spellcheck="false">
+            @endforeach
+
+            {{--
+              Re-typed, not confirmed with a checkbox. This is the one field
+              where a typo does not fail loudly: it succeeds, and the money goes
+              somewhere else.
+            --}}
+            <label for="gw-confirm">Type the AR account again</label>
+            <input type="text" id="gw-confirm" name="ar_account_confirm" required
+                   autocomplete="off" spellcheck="false">
+
+            <div class="row" style="margin-top: 14px;">
+                <button type="submit" class="primary">
+                    {{ $gateway ? 'Replace the configuration' : 'Configure gateway' }}
+                </button>
+                <span class="muted">
+                    Recorded in the audit log — field names and the last four digits, never values —
+                    and in the association's own log, because they are entitled to know it changed.
+                </span>
+            </div>
+        </form>
+
+        <p class="muted" style="margin-bottom: 0; margin-top: 12px;">
+            The same thing at the server: <code>php artisan tenant:gateway {{ $tenant->getKey() }}</code>.
+            Both go through the same configurator, so they cannot behave differently.
+        </p>
+    </div>
+
+    {{--
       Break-glass (FR-SEC-6).
 
-      Placed under the health figures on purpose: this is where somebody arrives
+      Placed after the health figures on purpose: this is where somebody arrives
       wanting a row and finds only counts, and it is the moment to say what the
-      route to a row actually is rather than leaving them to go looking for one.
+      route to a row actually is rather than leaving them to go looking.
     --}}
     <h2>Reading this association's records</h2>
 
@@ -189,10 +344,23 @@
         <form method="POST" action="{{ route('platform.tenant.migrate', $tenant->getKey()) }}">
             @csrf
             <div class="row">
-                <button type="submit" class="primary">Run migrations</button>
+                {{--
+                  Disabled when the database did not answer. Migrating an
+                  unreachable tenant fails in a way whose message is about
+                  connections, not about migrations, and sends the reader off
+                  chasing the wrong thing.
+                --}}
+                <button type="submit" class="primary" @disabled(! ($health['reachable'] ?? false))>
+                    Run migrations
+                </button>
                 <span class="muted">
-                    Runs pending tenant migrations for this association only. The output is
-                    kept below, because "did it run, and what did it say" gets asked days later.
+                    @if ($health['reachable'] ?? false)
+                        Runs pending tenant migrations for this association only. The output is
+                        kept below, because "did it run, and what did it say" gets asked days later.
+                    @else
+                        The database did not answer, so there is nothing to migrate yet. Fix the
+                        connection first — see Health above.
+                    @endif
                 </span>
             </div>
         </form>
@@ -207,12 +375,22 @@
                     <tr>
                         <td>{{ $run->started_at?->toDayDateTimeString() }}</td>
                         <td><code>{{ $run->command }}</code></td>
-                        <td>{{ $run->status }}</td>
-                        <td style="max-width: 420px;">
+                        <td><span class="pill {{ $run->status === 'failed' ? 'suspended' : ($run->status === 'succeeded' ? 'active' : '') }}">{{ $run->status }}</span></td>
+                        <td style="max-width: 520px;">
+                            {{--
+                              NOT truncated. This used to cut at 200 characters,
+                              which is reliably before the part of a migration
+                              error that says what actually went wrong - the SQL
+                              state and the offending column are at the end of
+                              the message, after the stack of framework context.
+                              Scrolls instead.
+                            --}}
                             @if ($run->error)
-                                <span style="color: var(--danger);">{{ Str::limit($run->error, 200) }}</span>
+                                <pre style="max-height: 180px; white-space: pre-wrap;">{{ $run->error }}</pre>
+                            @elseif (trim((string) $run->output) !== '')
+                                <pre style="max-height: 180px; white-space: pre-wrap;">{{ trim($run->output) }}</pre>
                             @else
-                                <span class="muted">{{ Str::limit(trim((string) $run->output) ?: '—', 200) }}</span>
+                                <span class="muted">no output</span>
                             @endif
                         </td>
                     </tr>

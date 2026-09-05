@@ -34,6 +34,8 @@ class TenantSnapshot extends Model
         'database_size_mb',
         'last_fine_accrual',
         'error',
+        'blocking_issues',
+        'readiness',
         'collected_at',
     ];
 
@@ -47,7 +49,29 @@ class TenantSnapshot extends Model
             'outstanding_instalments' => 'decimal:2',
             'outstanding_fines' => 'decimal:2',
             'database_size_mb' => 'decimal:2',
+            'blocking_issues' => 'integer',
+            'readiness' => 'array',
         ];
+    }
+
+    /**
+     * The checks that are not satisfied, as their labels.
+     *
+     * For the associations list, which has room for "no administrator" but not
+     * for the whole checklist. Blocking ones first: an association nobody can
+     * administer is a different problem from one with no fee heads yet.
+     *
+     * @return list<string>
+     */
+    public function unmetChecks(): array
+    {
+        $checks = collect($this->readiness ?? [])->reject(fn ($c) => $c['ok'] ?? true);
+
+        return $checks
+            ->sortByDesc(fn ($c) => (bool) ($c['blocking'] ?? false))
+            ->pluck('label')
+            ->values()
+            ->all();
     }
 
     public function tenant(): BelongsTo

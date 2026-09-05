@@ -5,14 +5,18 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Platform;
 
 use App\Http\Controllers\Controller;
+use App\Models\Operator;
 use App\Models\OperatorAuditLog;
 use App\Models\Tenant;
 use App\Models\TenantProvisioningRun;
 use App\Models\TenantSnapshot;
+use App\Services\GatewayConfigurator;
 use App\Services\PlatformService;
 use App\Services\TenantProvisioner;
+use App\Services\TenantReadiness;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 use Illuminate\View\View;
 
 /**
@@ -44,6 +48,8 @@ class PlatformController extends Controller
     public function __construct(
         private readonly PlatformService $platform,
         private readonly TenantProvisioner $provisioner,
+        private readonly TenantReadiness $readiness,
+        private readonly GatewayConfigurator $gateways,
     ) {}
 
     /**
@@ -52,22 +58,84 @@ class PlatformController extends Controller
      * Totals come from `tenant_snapshots`, never from a query spanning tenant
      * databases (FR-PLT-5). They are therefore as fresh as the last collection,
      * which the page states rather than leaving to be assumed.
+     *
+     * SEARCH, FILTER AND SORT ARE NOT DECORATION. This began as every
+     * association in registry order, which reads fine with four and not at all
+     * with forty - and the row somebody needs is usually the one that is
+     * broken, which is the hardest to find by scrolling.
      */
-    public function index(): View
+    public function index(Request $request): View
     {
         $snapshots = TenantSnapshot::latestPerTenant()->get()->keyBy('tenant_id');
 
-        $tenants = Tenant::orderBy('id')->get();
+        $search = trim((string) $request->query('q', ''));
+        $status = (string) $request->query('status', '');
+        $sort = (string) $request->query('sort', 'id');
+
+        $tenants = Tenant::query()
+            ->when($search !== '', fn ($q) => $q->where(function ($w) use ($search) {
+                $w->where('id', 'like', "%{$search}%")
+                    ->orWhere('name', 'like', "%{$search}%");
+            }))
+            ->when($status !== '' && $status !== 'attention', fn ($q) => $q->where('status', $status))
+            ->get();
+
+        /*
+         * Sorted here rather than in SQL, because two of the four orderings
+         * live in the snapshot rather than on the tenant row - and a UNION
+         * across the registry and a per-tenant table to sort a list of forty
+         * rows is the wrong trade.
+         */
+        $tenants = (match ($sort) {
+            'name' => $tenants->sortBy(fn ($t) => mb_strtolower((string) $t->name)),
+            'members' => $tenants->sortByDesc(fn ($t) => $snapshots->get($t->getKey())?->members ?? 0),
+            'size' => $tenants->sortByDesc(
+                fn ($t) => (float) ($snapshots->get($t->getKey())?->database_size_mb ?? 0)
+            ),
+            default => $tenants->sortBy(fn ($t) => $t->getKey()),
+        })->values();
+
+        /*
+         * "Attention" is a filter over the snapshot, not a status on the tenant
+         * row: an association can be perfectly active and still be unable to
+         * take a payment. It is the one filter an operator actually reaches for.
+         */
+        if ($status === 'attention') {
+            $tenants = $tenants->filter(function ($tenant) use ($snapshots) {
+                $snapshot = $snapshots->get($tenant->getKey());
+
+                return $snapshot === null
+                    || $snapshot->error !== null
+                    || ($snapshot->blocking_issues ?? 0) > 0;
+            })->values();
+        }
 
         return view('platform.index', [
             'tenants' => $tenants,
             'snapshots' => $snapshots,
             'totals' => $this->totals($snapshots),
             'collectedAt' => $snapshots->max('collected_at'),
-            'byStatus' => $tenants->countBy('status'),
+            'byStatus' => Tenant::query()->get()->countBy('status'),
+            'search' => $search,
+            'status' => $status,
+            'sort' => $sort,
+
+            // Counted over every association, not the filtered view, so the
+            // number does not change when somebody searches.
+            'needAttention' => $snapshots->filter(
+                fn ($snapshot) => $snapshot->error !== null || ($snapshot->blocking_issues ?? 0) > 0
+            )->count(),
         ]);
     }
 
+    /**
+     * One association, and what is still missing.
+     *
+     * Readiness is computed LIVE here rather than read from the snapshot, unlike
+     * the list. This is the page somebody acts on - they have just configured a
+     * gateway and want to see it took - and a checklist up to a day stale would
+     * be worse than none.
+     */
     public function show(string $tenant): View
     {
         $record = Tenant::findOrFail($tenant);
@@ -75,6 +143,12 @@ class PlatformController extends Controller
         return view('platform.tenant', [
             'tenant' => $record,
             'health' => $this->platform->health($record),
+            'readiness' => $this->readiness->for($record),
+
+            // Never a credential: the last four of the AR account and nothing
+            // else. See GatewayConfigurator.
+            'gateway' => $this->gateways->summary($record),
+
             'snapshot' => TenantSnapshot::where('tenant_id', $record->getKey())
                 ->latest('collected_at')->first(),
             'runs' => TenantProvisioningRun::where('tenant_id', $record->getKey())
@@ -206,9 +280,52 @@ class PlatformController extends Controller
 
         $run = $this->platform->migrate($record);
 
+        if ($run->status === 'failed') {
+            /*
+             * The reason, on the screen, not "failed — see the log below". A
+             * status with a pointer to a log is a second click to learn the one
+             * fact the first click was asking for.
+             */
+            return back()->withErrors([
+                'migrate' => 'Migration failed and nothing was applied: '
+                    .Str::limit(trim((string) $run->error), 300),
+            ]);
+        }
+
         return redirect()
             ->route('platform.tenant', $record->getKey())
-            ->with('status', "Migration {$run->status}. See the run log below.");
+            ->with('status', "Migrations ran. The full output is in the run log below.");
+    }
+
+    /**
+     * Who can reach this console, and whether they can actually get in.
+     *
+     * READ-ONLY, AND THAT IS THE POINT. There is no create, no disable, no
+     * reset. A console that could mint its own users would make one stolen
+     * session permanent, and one that could reset a colleague's second factor
+     * would make it reassignable - both are exactly what an attacker who got
+     * this far would reach for next.
+     *
+     * What it is for: knowing, before an incident rather than during one, that
+     * break-glass needs two operators and this deployment has one - and that
+     * the second has never finished enrolling.
+     */
+    public function operators(): View
+    {
+        $operators = Operator::orderBy('email')->get();
+
+        return view('platform.operators', [
+            'operators' => $operators,
+
+            /*
+             * Counted here rather than left to the reader, because it is the
+             * number that decides whether FR-SEC-6 works at all: a grant cannot
+             * be approved by the operator who asked for it.
+             */
+            'usable' => $operators->filter(
+                fn (Operator $o) => $o->is_active && $o->mfa_confirmed_at !== null
+            )->count(),
+        ]);
     }
 
     /** FR-PLT-4: the whole trail, not only one association's. */

@@ -6,6 +6,7 @@ namespace App\Console\Commands;
 
 use App\Models\Tenant;
 use App\Models\TenantSnapshot;
+use App\Services\TenantReadiness;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Throwable;
@@ -33,6 +34,11 @@ class CollectTenantSnapshots extends Command
         {--tenant=* : Only these associations; defaults to all that are not archived}';
 
     protected $description = 'Collect per-association figures into the central registry (FR-PLT-5)';
+
+    public function __construct(private readonly TenantReadiness $readiness)
+    {
+        parent::__construct();
+    }
 
     public function handle(): int
     {
@@ -66,9 +72,26 @@ class CollectTenantSnapshots extends Command
                 $this->warn("  {$tenant->getKey()}: {$e->getMessage()}");
             }
 
+            /*
+             * Readiness rides along with the figures rather than being asked
+             * for when the list renders: one connection swap per association
+             * per page load does not survive a platform with fifty of them.
+             *
+             * Outside the try above, and with its own guard, because an
+             * association whose figures failed is exactly the one whose
+             * readiness is worth recording - and a throw here would lose both.
+             */
+            try {
+                $readiness = $this->readiness->for($tenant);
+            } catch (Throwable $e) {
+                $readiness = ['blocking' => 1, 'checks' => []];
+            }
+
             TenantSnapshot::create($figures + [
                 'tenant_id' => $tenant->getKey(),
                 'collected_at' => $collectedAt,
+                'blocking_issues' => $readiness['blocking'],
+                'readiness' => $readiness['checks'],
             ]);
         }
 

@@ -7,6 +7,7 @@ namespace App\Console\Commands;
 use App\Models\Operator;
 use App\Models\OperatorAuditLog;
 use App\Services\Totp;
+use App\Support\TerminalQr;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
@@ -22,9 +23,20 @@ use Illuminate\Support\Str;
  *
  * THE SECRET IS SHOWN ONCE, HERE. That is unavoidable - an authenticator app
  * has to be given it - and it is why this prints to a terminal rather than
- * emailing or storing anything readable. It is displayed as text as well as an
- * `otpauth://` URI, because a URI is only useful if something can turn it into
- * a QR code, and a server console usually cannot.
+ * emailing or storing anything readable.
+ *
+ * IT IS DRAWN AS A QR CODE, in the terminal, locally. The first version printed
+ * a 32-character base32 key and an `otpauth://` URI and left the operator to
+ * transcribe one into a phone. That failed in every available way: the key was
+ * mistyped, an earlier run's key was entered against a later run's secret, and
+ * at one point an example number from the instructions was typed in place of a
+ * code. The typed key is still printed underneath, because a scanner sometimes
+ * will not focus - but nobody should have to reach for it.
+ *
+ * Not a link to a QR service: the URI contains the secret, so generating it on
+ * somebody else's website hands a second factor to a stranger. That is exactly
+ * the shortcut a person under time pressure takes, which is why the code is
+ * drawn here rather than merely advised against.
  *
  * Enrolment is not complete until a code is verified: a secret nobody has
  * proved against their phone is a lockout waiting to happen, so the command
@@ -67,6 +79,16 @@ class OperatorMfa extends Command
 
         $this->info("Enrolling [{$email}].");
         $this->newLine();
+
+        $uri = $totp->uri($secret, $email, (string) config('app.name'));
+
+        foreach (TerminalQr::render($uri) as $line) {
+            $this->line('  '.$line);
+        }
+
+        $this->newLine();
+        $this->line('  Scan the code above. If the camera will not focus, enter this by hand:');
+        $this->newLine();
         $this->line('  Secret:  '.trim(chunk_split($secret, 4, ' ')));
         /*
          * `app.name` as it stands, with nothing appended. It is already
@@ -74,9 +96,20 @@ class OperatorMfa extends Command
          * "BCS Platform Platform" - which is display-only, but it is the
          * label somebody then reads in their authenticator every day.
          */
-        $this->line('  URI:     '.$totp->uri($secret, $email, (string) config('app.name')));
         $this->newLine();
-        $this->comment('  Add it to an authenticator app, then enter the code it shows.');
+
+        /*
+         * Said plainly, because not saying it cost an hour. Every run mints a
+         * NEW secret, so an entry added from a previous run is dead the moment
+         * this line prints - and the failure it causes is a rejected code,
+         * which reads like a broken clock or a broken implementation rather
+         * than like the wrong account being read.
+         */
+        $this->warn('  This is a NEW secret. Any BCS entry already in your authenticator');
+        $this->warn('  is now dead - delete it, or you will read codes from the wrong one.');
+        $this->newLine();
+        $this->comment('  Then enter the six digits the app is showing. Not a password, not');
+        $this->comment('  the key above - the six digits that change every 30 seconds.');
         $this->newLine();
 
         $code = (string) $this->ask('Code from the app');
@@ -87,7 +120,22 @@ class OperatorMfa extends Command
          * were told was configured.
          */
         if ($totp->verify($secret, $code) === null) {
-            $this->error('That code did not match. Nothing was saved - start again.');
+            $this->error('That code did not match. Nothing was saved.');
+            $this->newLine();
+
+            /*
+             * The three things it actually is, in the order they turn out to be
+             * true. "Did not match" on its own sends people to check the
+             * algorithm, which is the one thing it has never been.
+             */
+            $this->line('  Almost always one of three things:');
+            $this->line('   1. The code came from an entry left over from an earlier run.');
+            $this->line('      Delete every BCS entry and scan the code above again.');
+            $this->line('   2. What was typed was not the six rotating digits.');
+            $this->line('   3. The phone clock is off by more than 30 seconds. Turn on');
+            $this->line('      automatic date and time.');
+            $this->newLine();
+            $this->line('  Server time is '.date('H:i:s').' UTC. If the phone disagrees, that is it.');
 
             return self::FAILURE;
         }

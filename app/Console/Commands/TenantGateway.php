@@ -5,56 +5,37 @@ declare(strict_types=1);
 namespace App\Console\Commands;
 
 use App\Models\Tenant;
-use App\Models\Tenant\AuditLog;
-use App\Models\OperatorAuditLog;
-use App\Models\Tenant\GatewayCredential;
-use App\Services\Gateways\SonaliPaymentGateway;
+use App\Services\GatewayConfigurator;
+use DomainException;
 use Illuminate\Console\Command;
 
 /**
- * Set an association's payment-gateway credentials (FR-PAY-11).
+ * Set an association's payment-gateway credentials at the server (FR-PAY-11).
  *
- * WHY THIS IS A COMMAND AND NOT A SCREEN
- * --------------------------------------
- * It used to be a screen: `PUT /staff/settings/gateway`, available to anybody
- * in the association holding `settings.edit`. That followed FR-PAY-11's
- * original wording, "settable by staff", which in turn followed A-1 - each
- * association procures its own merchant account.
+ * THE SAME WORK THE CONSOLE DOES, through the same `GatewayConfigurator`. This
+ * command came first and was for a while the only surface; the console form
+ * exists now because onboarding an association should not require a server
+ * prompt. Neither is the "real" one, and neither may quietly skip the recording
+ * the other does - which is why the writing lives in the service and not here.
  *
- * A-1 is about whose contract and whose bank account it is. It does not follow
- * that the association's own officers should hold the write surface, and two
- * things say they should not:
- *
- *   1. `ar_account` is WHERE THE MONEY LANDS. Anyone with `settings.edit` could
- *      change it. That is a money-diversion vector in the hands of a role held
- *      by treasurers and office staff, granted for editing fine rates.
- *
- *   2. The credentials are deliberately write-only - never returned by any
- *      endpoint, so a compromised account cannot read them. The same property
- *      means a malicious CHANGE is nearly invisible: the audit log records that
- *      the gateway was updated and which field names, never the values. There
- *      is no "what was it before" to compare against.
- *
- * So the surface moved to whoever provisions the association, which is the same
- * person, on the same machine, doing the same onboarding as `tenant:provision`.
- * The association keeps what it needs: it can SEE whether a gateway is
- * configured and which account it ends in, and it can turn online payment off
- * entirely (`payment.online_enabled`). It cannot point the money somewhere new.
+ * WHAT THIS SURFACE IS STILL FOR: a deployment with the console switched off,
+ * and a machine where somebody is already provisioning at a prompt anyway.
  *
  * SECRETS ARE PROMPTED, NEVER PASSED AS ARGUMENTS. A merchant password in
- * `--password=` lands in shell history, in `ps` output while it runs, and in
- * any terminal recording. The prompt is the whole reason this is interactive.
+ * `--password=` lands in shell history, in `ps` output while it runs, and in any
+ * terminal recording. The prompt is the whole reason this is interactive.
  */
 class TenantGateway extends Command
 {
     protected $signature = 'tenant:gateway
         {slug : The association to configure}
         {--show : Print what is configured, without changing it}
-        {--disable : Mark the gateway inactive, leaving the credentials in place}';
+        {--disable : Stop taking online payment, leaving the credentials in place}
+        {--enable : Resume with the credentials already stored}';
 
     protected $description = 'Set or inspect an association payment gateway (prompts for secrets)';
 
-    public function handle(): int
+    public function handle(GatewayConfigurator $gateways): int
     {
         $tenant = Tenant::find((string) $this->argument('slug'));
 
@@ -64,65 +45,58 @@ class TenantGateway extends Command
             return self::FAILURE;
         }
 
-        return $tenant->run(function () use ($tenant) {
-            if ($this->option('show')) {
-                return $this->show($tenant);
-            }
+        try {
+            return match (true) {
+                (bool) $this->option('show') => $this->show($gateways, $tenant),
+                (bool) $this->option('disable') => $this->toggle($gateways, $tenant, false),
+                (bool) $this->option('enable') => $this->toggle($gateways, $tenant, true),
+                default => $this->setCredentials($gateways, $tenant),
+            };
+        } catch (DomainException $e) {
+            $this->error($e->getMessage());
 
-            if ($this->option('disable')) {
-                return $this->disable($tenant);
-            }
-
-            return $this->setCredentials($tenant);
-        });
+            return self::FAILURE;
+        }
     }
 
-    private function show(Tenant $tenant): int
+    private function show(GatewayConfigurator $gateways, Tenant $tenant): int
     {
-        $credential = GatewayCredential::where('provider', SonaliPaymentGateway::PROVIDER)->first();
+        $summary = $gateways->summary($tenant);
 
         $this->line("Association: {$tenant->getKey()}");
 
-        if (! $credential) {
+        if (! $summary) {
             $this->warn('  No gateway configured. Online payment cannot be taken.');
 
             return self::SUCCESS;
         }
 
-        $this->line('  Provider:   '.$credential->provider);
-        $this->line('  Active:     '.($credential->is_active ? 'yes' : 'no'));
+        $this->line('  Provider:   '.$summary['provider']);
+        $this->line('  Active:     '.($summary['is_active'] ? 'yes' : 'no'));
 
-        // The last four only, here as everywhere else. A command that prints a
-        // merchant password to a terminal has undone the reason for the move.
-        $this->line('  AR account: ...'.substr((string) $credential->credential('ar_account'), -4));
-        $this->line('  Updated:    '.$credential->updated_at?->toDateTimeString());
+        // The last four only, here as everywhere else. A command that printed a
+        // merchant password to a terminal would undo the reason this moved.
+        $this->line('  AR account: ...'.$summary['ar_account_last4']);
+        $this->line('  Updated:    '.$summary['updated_at']);
 
         return self::SUCCESS;
     }
 
-    private function disable(Tenant $tenant): int
+    private function toggle(GatewayConfigurator $gateways, Tenant $tenant, bool $on): int
     {
-        $credential = GatewayCredential::where('provider', SonaliPaymentGateway::PROVIDER)->first();
+        $on ? $gateways->enable($tenant, 'console') : $gateways->disable($tenant, 'console');
 
-        if (! $credential) {
-            $this->warn('Nothing to disable: no gateway is configured.');
-
-            return self::SUCCESS;
-        }
-
-        $credential->update(['is_active' => false]);
-
-        $this->record($tenant, 'gateway.credentials.disabled', ['provider' => $credential->provider]);
-
-        $this->info('Gateway marked inactive. The credentials are kept, so re-enabling does not need re-entering them.');
+        $this->info($on
+            ? 'Online payment resumed with the credentials already stored.'
+            : 'Online payment stopped. The credentials are kept, so resuming does not need them re-entered.');
 
         return self::SUCCESS;
     }
 
     /** Named `setCredentials`, not `configure`: Symfony's Command reserves that. */
-    private function setCredentials(Tenant $tenant): int
+    private function setCredentials(GatewayConfigurator $gateways, Tenant $tenant): int
     {
-        $existing = GatewayCredential::where('provider', SonaliPaymentGateway::PROVIDER)->first();
+        $existing = $gateways->summary($tenant);
 
         $this->line("Configuring the payment gateway for [{$tenant->getKey()}].");
 
@@ -136,94 +110,35 @@ class TenantGateway extends Command
             }
         }
 
-        $values = [
-            'api_base_url' => $this->ask('API base URL'),
-            'redirect_base_url' => $this->ask('Redirect base URL (where the member comes back to)'),
-            'username' => $this->ask('Merchant username'),
-            'password' => $this->secret('Merchant password'),
-            'ar_account' => $this->ask('AR account (where the money lands)'),
-            'basic_auth' => $this->secret('Basic auth token'),
-            'callback_username' => $this->ask('Callback username (what the gateway sends us)'),
-            'callback_password' => $this->secret('Callback password'),
-        ];
+        $values = [];
 
-        foreach ($values as $field => $value) {
-            if ($value === null || trim((string) $value) === '') {
-                $this->error("{$field} is required. Nothing was written.");
-
-                return self::FAILURE;
+        // Driven by the service's field list, so a field added there is asked
+        // for here without anybody having to remember to add it twice.
+        foreach (GatewayConfigurator::FIELDS as $field => $meta) {
+            if (isset($meta['help'])) {
+                $this->comment('  '.$meta['help']);
             }
+
+            $values[$field] = $meta['secret']
+                ? (string) $this->secret($meta['label'])
+                : (string) $this->ask($meta['label']);
         }
 
         /*
-         * Read back and confirmed before writing, because the AR account is the
-         * one field where a typo does not fail loudly - it succeeds, and the
-         * money goes somewhere else.
+         * Re-typed, not confirmed with a yes. The AR account is the one field
+         * where a typo does not fail loudly - it succeeds, and the money goes
+         * somewhere else - and a confirmation that only needs a keypress is one
+         * people learn to press.
          */
         $this->newLine();
-        $this->line('  AR account:  '.$values['ar_account']);
-        $this->line('  API base:    '.$values['api_base_url']);
-        $this->line('  Merchant:    '.$values['username']);
+        $confirm = (string) $this->ask('Type the AR account again to confirm');
+
+        $gateways->store($tenant, $values, 'console', $confirm);
+
         $this->newLine();
-
-        if (! $this->confirm('Is the AR account above correct?', false)) {
-            $this->line('Cancelled. Nothing was written.');
-
-            return self::FAILURE;
-        }
-
-        GatewayCredential::updateOrCreate(
-            ['provider' => SonaliPaymentGateway::PROVIDER],
-            ['credentials' => $values, 'is_active' => true],
-        );
-
-        $this->record($tenant, 'gateway.credentials.updated', [
-            'provider' => SonaliPaymentGateway::PROVIDER,
-
-            // Field NAMES, never values - the same rule the old endpoint kept.
-            'fields' => array_keys($values),
-            'set_by' => 'tenant:gateway',
-        ]);
-
         $this->info('Gateway configured.');
-        $this->line('The association can see that it is set, and can turn online payment off, but cannot change it.');
+        $this->line('The association can see that it is set and can turn online payment off, but cannot change it.');
 
         return self::SUCCESS;
-    }
-
-    /**
-     * Recorded in the ASSOCIATION's audit log, not only the operator's shell.
-     *
-     * The association is entitled to know its gateway changed and when, even
-     * though it cannot make the change itself. `actor_type` is null because the
-     * actor is the platform operator, who has no row in the tenant database.
-     *
-     * @param  array<string, mixed>  $after
-     */
-    private function record(Tenant $tenant, string $action, array $after): void
-    {
-        AuditLog::create([
-            'actor_type' => null,
-            'actor_id' => null,
-            'subject_type' => GatewayCredential::class,
-            'subject_id' => 0,
-            'action' => $action,
-            'after' => $after,
-            'reason' => 'Set by the platform operator from the server console.',
-        ]);
-
-        /*
-         * And in the OPERATOR's log as well (FR-PLT-4). The two records answer
-         * different questions: the association's says their gateway changed,
-         * the platform's says which operator changed it and from where. Only
-         * the second one is any use in an incident.
-         */
-        OperatorAuditLog::record(
-            action: $action,
-            tenantId: $tenant->getKey(),
-            after: $after,
-            reason: 'Set at the server console.',
-            source: 'console',
-        );
     }
 }

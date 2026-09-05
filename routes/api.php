@@ -291,12 +291,13 @@ Route::prefix('v1')->group(function () {
             /*
              * There is deliberately no route to SET the gateway.
              *
-             * It moved to `php artisan tenant:gateway`, run by whoever
-             * provisions the association. `ar_account` decides where the money
-             * lands, and an endpoint that lets anybody with `settings.edit`
-             * change it hands a money-diversion vector to a role granted for
-             * editing fine rates. GET /settings still reports whether a gateway
-             * is configured and which account it ends in.
+             * It moved to the platform operator - the console form at
+             * /platform/tenants/{id}, or `php artisan tenant:gateway` at the
+             * server, both through `GatewayConfigurator`. `ar_account` decides
+             * where the money lands, and an endpoint that lets anybody with
+             * `settings.edit` change it hands a money-diversion vector to a
+             * role granted for editing fine rates. GET /settings still reports
+             * whether a gateway is configured and which account it ends in.
              */
 
             /*

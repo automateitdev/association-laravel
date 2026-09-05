@@ -7,6 +7,9 @@ namespace App\Services;
 use App\Models\Tenant\AssociatorInfo;
 use App\Models\Tenant\MemberShareBalance;
 use App\Models\Tenant\PaymentInfo;
+use App\Models\Tenant\ShareTransfer;
+use DomainException;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Minting and moving shares.
@@ -87,5 +90,122 @@ class ShareService
     public function balanceFor(int $memberId): int
     {
         return (int) MemberShareBalance::query()->where('member_id', $memberId)->sum('shares');
+    }
+
+    /**
+     * Move shares from one member to another (FR-SHR-3).
+     *
+     * WHAT THIS REFUSES, AND WHY EACH ONE MATTERS
+     *
+     *   - More shares than the seller holds IN THAT FEE HEAD. Balances are per
+     *     head, so a member with ten Monthly Savings shares and two of another
+     *     kind cannot transfer twelve of either.
+     *   - A transfer to oneself. It would net to nothing while leaving a record
+     *     implying something happened, which is worse than refusing.
+     *   - Zero or negative shares. A transfer of nothing is a mistake, and a
+     *     negative one is a theft written backwards.
+     *
+     * ONE TRANSACTION. Two balances move and a record is written; any of the
+     * three failing alone would leave shares that exist twice or not at all.
+     *
+     * NO LEDGER POSTING. Whatever the buyer paid the seller is between them -
+     * the association took no money, so nothing belongs in its accounts. The
+     * `amount` is recorded because members ask, not because it is income.
+     */
+    public function transfer(
+        int $sellerId,
+        int $buyerId,
+        int $feeSetupId,
+        int $shares,
+        string $amount = '0.00',
+        ?string $transferredOn = null,
+        ?int $createdBy = null,
+    ): ShareTransfer {
+        if ($shares < 1) {
+            throw new DomainException('A transfer must move at least one share.');
+        }
+
+        if ($sellerId === $buyerId) {
+            throw new DomainException('A member cannot transfer shares to themselves.');
+        }
+
+        $held = (int) MemberShareBalance::query()
+            ->where('member_id', $sellerId)
+            ->where('fee_setup_id', $feeSetupId)
+            ->value('shares');
+
+        if ($held < $shares) {
+            throw new DomainException(
+                "The seller holds {$held} share(s) of this fee head, so {$shares} cannot be transferred."
+            );
+        }
+
+        return DB::transaction(function () use (
+            $sellerId, $buyerId, $feeSetupId, $shares, $amount, $transferredOn, $createdBy
+        ) {
+            /*
+             * Decrement first. If the seller's row somehow moved between the
+             * check above and here, the guard below catches it rather than
+             * letting a negative balance exist for even one statement.
+             */
+            $sellerBalance = MemberShareBalance::query()
+                ->where('member_id', $sellerId)
+                ->where('fee_setup_id', $feeSetupId)
+                ->lockForUpdate()
+                ->first();
+
+            if (! $sellerBalance || $sellerBalance->shares < $shares) {
+                throw new DomainException('The seller no longer holds enough shares.');
+            }
+
+            $sellerBalance->decrement('shares', $shares);
+
+            $buyerBalance = MemberShareBalance::query()->firstOrCreate(
+                ['member_id' => $buyerId, 'fee_setup_id' => $feeSetupId],
+                ['shares' => 0]
+            );
+
+            $buyerBalance->increment('shares', $shares);
+
+            // The denormalised totals staff actually read, kept in step. A
+            // report reading one and a profile reading the other must not
+            // disagree.
+            AssociatorInfo::query()->where('member_id', $sellerId)->decrement('num_or_shares', $shares);
+            AssociatorInfo::query()->where('member_id', $buyerId)->increment('num_or_shares', $shares);
+
+            return ShareTransfer::create([
+                'seller_id' => $sellerId,
+                'buyer_id' => $buyerId,
+                'fee_setup_id' => $feeSetupId,
+                'shares' => $shares,
+                'amount' => $amount,
+                'transferred_on' => $transferredOn ?? now()->toDateString(),
+                'created_by' => $createdBy,
+            ]);
+        });
+    }
+
+    /**
+     * What a member holds, split by fee head.
+     *
+     * The split is what a transfer screen needs: "you have 12 shares" is not
+     * enough to choose which of them to move.
+     *
+     * @return list<array{fee_setup_id: int, fee_head: string, shares: int}>
+     */
+    public function balancesByHead(int $memberId): array
+    {
+        return MemberShareBalance::query()
+            ->with('feeSetup:id,fee_head')
+            ->where('member_id', $memberId)
+            ->where('shares', '>', 0)
+            ->get()
+            ->map(fn (MemberShareBalance $b) => [
+                'fee_setup_id' => $b->fee_setup_id,
+                'fee_head' => $b->feeSetup?->fee_head ?? 'Unknown',
+                'shares' => (int) $b->shares,
+            ])
+            ->values()
+            ->all();
     }
 }

@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\V1\GatewayController;
 use App\Http\Controllers\Api\V1\HealthController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\PaymentDocumentController;
+use App\Http\Controllers\Api\V1\ProfileController;
 use App\Http\Controllers\Api\V1\Staff\AuditController;
 use App\Http\Controllers\Api\V1\Staff\CollectionController;
 use App\Http\Controllers\Api\V1\Staff\FeeController;
@@ -15,7 +16,9 @@ use App\Http\Controllers\Api\V1\Staff\LedgerController;
 use App\Http\Controllers\Api\V1\Staff\MemberController;
 use App\Http\Controllers\Api\V1\Staff\NomineeController;
 use App\Http\Controllers\Api\V1\Staff\PaymentApprovalController;
+use App\Http\Controllers\Api\V1\Staff\ProfileUpdateController;
 use App\Http\Controllers\Api\V1\Staff\ReportController;
+use App\Http\Controllers\Api\V1\Staff\ShareController;
 use App\Http\Controllers\Api\V1\Staff\RoleController;
 use App\Http\Controllers\Api\V1\Staff\UserController;
 use App\Http\Controllers\Api\V1\Staff\SettingsController;
@@ -77,6 +80,13 @@ Route::prefix('v1')->group(function () {
         // Self-scoped: these act only on the token holder.
         Route::post('/auth/logout', [AuthController::class, 'logout']);
         Route::get('/me', [AuthController::class, 'me']);
+
+        /*
+         * A member asking the office to change their details (FR-MEM-8).
+         * Not an edit - nothing here changes the record. See ProfileController.
+         */
+        Route::get('/me/profile-updates', [ProfileController::class, 'index']);
+        Route::post('/me/profile-updates', [ProfileController::class, 'store']);
 
         // ---- member surface --------------------------------------------
         //
@@ -334,6 +344,29 @@ Route::prefix('v1')->group(function () {
                 ->middleware('permission:roles.edit');
             Route::delete('/roles/{role}', [RoleController::class, 'destroy'])
                 ->middleware('permission:roles.delete');
+
+            /*
+             * The queue of changes members have asked for (FR-MEM-8). Viewing
+             * and deciding are separate permissions: an association may well
+             * want somebody to read the queue without being able to approve
+             * a change of mobile number.
+             */
+            Route::get('/profile-updates', [ProfileUpdateController::class, 'index'])
+                ->middleware('permission:profile-updates.view');
+            Route::post('/profile-updates/{update}/decide', [ProfileUpdateController::class, 'decide'])
+                ->middleware('permission:profile-updates.decide');
+
+            /*
+             * Shares (FR-SHR-3). A transfer moves shares between two members
+             * and posts nothing to the ledger: whatever the buyer paid the
+             * seller is between them, and the association took no money.
+             */
+            Route::get('/shares/transfers', [ShareController::class, 'index'])
+                ->middleware('permission:shares.view');
+            Route::get('/shares/members/{member}', [ShareController::class, 'show'])
+                ->middleware('permission:shares.view');
+            Route::post('/shares/transfers', [ShareController::class, 'store'])
+                ->middleware('permission:shares.transfer');
 
             // Reports
             Route::get('/reports/memberwise-paid', [ReportController::class, 'memberwisePaid'])

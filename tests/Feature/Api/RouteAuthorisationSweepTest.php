@@ -78,6 +78,19 @@ class RouteAuthorisationSweepTest extends TestCase
     private const SELF_SCOPED_ROUTES = [
         'POST api/v1/auth/logout',  // revokes the caller's own current token
         'GET api/v1/me',            // returns the caller's own profile
+
+        /*
+         * A member's own requests to change their own details (FR-MEM-8). An
+         * ability here would be checking that a member is themselves.
+         *
+         * Worth being clear about what makes this safe: neither route CHANGES
+         * anything. They file a request that staff decide on behind
+         * `profile-updates.decide`, and the controller refuses any caller that
+         * is not a Member. The dangerous half is authorised; this half is not
+         * dangerous.
+         */
+        'GET api/v1/me/profile-updates',
+        'POST api/v1/me/profile-updates',
     ];
 
     /**

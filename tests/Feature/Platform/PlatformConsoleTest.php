@@ -33,6 +33,15 @@ class PlatformConsoleTest extends TestCase
 
         // The console is off by default, which is itself tested below.
         config(['platform.console_enabled' => true, 'platform.console_ips' => '']);
+
+        /*
+         * phpunit.xml sets SESSION_DRIVER=array for the whole suite, which is
+         * right for a stateless token API and wrong for the one part of this
+         * application that has a session. Tested on the driver production uses,
+         * because the bug this class exists to prevent was precisely a session
+         * that did not survive a request.
+         */
+        config(['session.driver' => 'database']);
     }
 
     private function operator(array $attributes = []): Operator
@@ -112,6 +121,46 @@ class PlatformConsoleTest extends TestCase
             'action' => 'operator.signed_in',
             'operator_email' => $operator->email,
         ]);
+    }
+
+    /**
+     * THE TEST THAT WAS MISSING.
+     *
+     * Every sign-in test stopped at the redirect, and `assertAuthenticatedAs`
+     * only asks about the guard within the request that just ran. So all of
+     * them passed while the real console was unusable: SESSION_DRIVER was
+     * `array`, correct for a token API and fatal for a server-rendered login.
+     * Signing in genuinely succeeded and the NEXT request arrived a stranger.
+     *
+     * Following the redirect is the whole difference between "the credentials
+     * were accepted" and "you are signed in".
+     */
+    public function test_a_signed_in_operator_stays_signed_in_on_the_next_request(): void
+    {
+        $operator = $this->operator();
+
+        $this->post('/platform/login', [
+            'email' => $operator->email,
+            'password' => 'a-long-enough-password',
+        ])->assertRedirect('/platform');
+
+        // A SEPARATE request, which is where a session that does not persist
+        // stops being invisible.
+        $this->get('/platform')
+            ->assertOk()
+            ->assertSee('Associations');
+    }
+
+    /**
+     * And the console refuses to serve at all on a driver that cannot keep a
+     * session, rather than authenticating people into a redirect loop with no
+     * error anywhere.
+     */
+    public function test_the_console_refuses_a_session_driver_that_cannot_persist(): void
+    {
+        config(['session.driver' => 'array']);
+
+        $this->get('/platform/login')->assertStatus(500);
     }
 
     /** Disabled, never deleted - so their audit entries keep resolving to a name. */

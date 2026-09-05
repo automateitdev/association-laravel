@@ -39,6 +39,37 @@ class PlatformConsole
             abort(404);
         }
 
+        $this->assertSessionsPersist();
+
         return $next($request);
+    }
+
+    /**
+     * Refuse to serve a console whose sessions cannot outlive a request.
+     *
+     * This exists because of how the failure presents without it. The API is
+     * stateless, so `SESSION_DRIVER` was `array` - correct for tokens, and
+     * fatal for a server-rendered login. Signing in genuinely succeeded, the
+     * redirect fired, the next request arrived with an empty session, and the
+     * operator landed back on the login page with no error anywhere: not on
+     * screen, not in the log, not in the audit trail, which recorded a
+     * perfectly successful sign-in each time they tried.
+     *
+     * A misconfiguration that authenticates you and then silently pretends you
+     * are a stranger is worth failing loudly for.
+     */
+    private function assertSessionsPersist(): void
+    {
+        $driver = config('session.driver');
+
+        if (in_array($driver, ['array', null], true)) {
+            abort(500, sprintf(
+                'The platform console needs sessions that survive a request, and SESSION_DRIVER '
+                    .'is "%s", which does not. Set SESSION_DRIVER=database (the sessions table '
+                    .'lives in the central database) or file. Without this, signing in appears '
+                    .'to do nothing.',
+                $driver ?? 'null',
+            ));
+        }
     }
 }

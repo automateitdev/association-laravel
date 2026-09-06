@@ -36,16 +36,64 @@ class AuthController extends Controller
             'login' => ['required', 'string', 'max:255'],
             'password' => ['required', 'string'],
             'device_name' => ['sometimes', 'string', 'max:255'],
+
+            /*
+             * Which account, when one person holds both (SRS OD-4). Only ever
+             * sent on a second attempt, after the first came back
+             * ACCOUNT_AMBIGUOUS - the app does not guess and neither do we.
+             */
+            'as' => ['sometimes', 'in:staff,member'],
         ]);
 
         $this->throttle($request, $credentials['login']);
 
-        // Staff first, then members. An email that exists in both is a staff
-        // login; the two are separate accounts by design (SRS OD-4).
-        $account = $this->findStaff($credentials['login'])
-            ?? $this->findMember($credentials['login']);
+        /*
+         * ONE PERSON MAY HOLD BOTH ACCOUNTS (SRS OD-4) - a treasurer is often
+         * also a member - and staff are found by email while members are found
+         * by email or mobile, so a shared EMAIL matches two rows.
+         *
+         * This used to be `findStaff() ?? findMember()`, which meant the member
+         * row was never consulted once a staff row existed. With one password
+         * that silently signed them into the staff app forever, unable to reach
+         * their own dues. With two, the member password was checked against the
+         * STAFF hash, failed, and came back "invalid credentials" - a permanent
+         * lockout reported as a typo.
+         *
+         * So both are tried, and the PASSWORD usually settles it: different
+         * passwords match exactly one account and nobody is asked anything.
+         * Only when one password opens both is there a real question, and only
+         * then is it put to the person.
+         */
+        $requested = $credentials['as'] ?? null;
 
-        if (! $account || ! Hash::check($credentials['password'], (string) $account->password)) {
+        $staff = $requested === 'member' ? null : $this->findStaff($credentials['login']);
+        $member = $requested === 'staff' ? null : $this->findMember($credentials['login']);
+
+        $staffOk = $staff && Hash::check($credentials['password'], (string) $staff->password);
+        $memberOk = $member && Hash::check($credentials['password'], (string) $member->password);
+
+        /*
+         * DISCLOSED ONLY AFTER THE PASSWORD IS PROVED, and that ordering is the
+         * whole security of it. Answering "this address has a staff account and
+         * a member account" to anyone who types an email would turn the login
+         * form into a directory of who works for the association. Here it is
+         * only ever said to somebody who has already presented a password that
+         * opens both - which is to say, the owner.
+         */
+        if ($staffOk && $memberOk) {
+            RateLimiter::clear($this->throttleKey($request, $credentials['login']));
+
+            throw new ApiException(
+                'ACCOUNT_AMBIGUOUS',
+                'That email has both a staff account and a member account. Which one are you signing in to?',
+                409,
+                ['roles' => ['staff', 'member']],
+            );
+        }
+
+        $account = $staffOk ? $staff : ($memberOk ? $member : null);
+
+        if (! $account) {
             RateLimiter::hit($this->throttleKey($request, $credentials['login']));
 
             throw ApiException::invalidCredentials();

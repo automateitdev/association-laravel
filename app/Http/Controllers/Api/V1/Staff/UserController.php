@@ -7,6 +7,7 @@ namespace App\Http\Controllers\Api\V1\Staff;
 use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Models\Tenant\AuditLog;
+use App\Models\Tenant\Member;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -36,6 +37,10 @@ use Spatie\Permission\Models\Role;
  * Neither is a nicety. Recovering from either would mean someone with database
  * access editing rows by hand, in a system whose whole premise is that each
  * association's data is separate and self-administered.
+ *
+ * A STAFF EMAIL MAY ALREADY BELONG TO A MEMBER, and that is allowed: a
+ * treasurer is usually also a member, and SRS OD-4 has them as two separate
+ * records. So this file WARNS and does not refuse. See dualAccountNotice().
  */
 class UserController extends Controller
 {
@@ -87,7 +92,10 @@ class UserController extends Controller
             return $user;
         });
 
-        return response()->json(['data' => $this->shape($user->fresh('roles'))], 201);
+        return response()->json([
+            'data' => $this->shape($user->fresh('roles')),
+            'meta' => ['notice' => $this->dualAccountNotice($validated['email'])],
+        ], 201);
     }
 
     public function update(Request $request, int $user): JsonResponse
@@ -130,7 +138,17 @@ class UserController extends Controller
             $this->audit($request, $record, 'user.updated', $before, $this->shape($record->fresh('roles')));
         });
 
-        return response()->json(['data' => $this->shape($record->fresh('roles'))]);
+        /*
+         * Only when the email MOVED. Repeating the notice every time somebody
+         * fixes a spelling on an account that has always collided is noise, and
+         * a warning shown for no reason is a warning nobody reads.
+         */
+        $moved = isset($validated['email']) && $validated['email'] !== $before['email'];
+
+        return response()->json([
+            'data' => $this->shape($record->fresh('roles')),
+            'meta' => ['notice' => $moved ? $this->dualAccountNotice($validated['email']) : null],
+        ]);
     }
 
     public function destroy(Request $request, int $user): JsonResponse
@@ -187,6 +205,53 @@ class UserController extends Controller
                 422,
             );
         }
+    }
+
+    /**
+     * "This email is also a member's" - said, not enforced.
+     *
+     * WHY IT IS NOT A REFUSAL
+     * -----------------------
+     * Because the collision is usually correct. The treasurer is a member of
+     * the association she keeps the books for, and SRS OD-4 gives her two
+     * records on purpose: one for the ledger she administers, one for the dues
+     * she owes. Refusing the second account would be refusing the ordinary case.
+     *
+     * WHY IT IS SAID AT ALL
+     * ---------------------
+     * Because of what happens at sign-in. Both accounts are tried and the
+     * PASSWORD picks one, so two different passwords resolve silently and
+     * nobody is ever asked anything. One password opening both is genuinely
+     * ambiguous, and she is asked which she means - every single time.
+     *
+     * That is the only decision the person creating the account can make, and
+     * this is the only moment they can make it: they are choosing the password
+     * on the very screen this notice comes back to. Afterwards it costs an edit.
+     */
+    private function dualAccountNotice(?string $email): ?string
+    {
+        if (! $email) {
+            return null;
+        }
+
+        $member = Member::with('associatorInfo')->where('email', $email)->first();
+
+        if (! $member) {
+            return null;
+        }
+
+        /*
+         * The membership number lives on associators_infos, not on the member -
+         * it is assigned by the office after the record exists, so a member can
+         * legitimately have none. Named when there is one, because on a register
+         * of several hundred a name alone is not always enough to tell who.
+         */
+        $number = $member->associatorInfo?->membership_no;
+        $who = $number ? "{$member->name} ({$number})" : $member->name;
+
+        return "This email already belongs to a member, {$who}. That is fine - one person can hold "
+            .'both accounts. Just make sure this password is DIFFERENT from their member password, '
+            .'or they will be asked which account they mean every time they sign in.';
     }
 
     private function find(int $id): User

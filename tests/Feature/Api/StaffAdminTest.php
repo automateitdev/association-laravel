@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Api;
 
+use App\Models\Tenant\Member;
 use App\Models\User;
 use App\Services\TenantSeedService;
 use Illuminate\Support\Facades\DB;
@@ -123,6 +124,135 @@ class StaffAdminTest extends TenantTestCase
         $this->withHeaders($this->headers($token))
             ->getJson('/api/v1/staff/fee-setups')
             ->assertForbidden();
+    }
+
+    // ---- one person, two accounts ----------------------------------------
+
+    private function member(string $email, string $name = 'Rokeya Begum'): Member
+    {
+        return $this->inTenant(function () use ($email, $name) {
+            $member = Member::create([
+                'name' => $name,
+                'email' => $email,
+                'mobile' => '0170000'.random_int(1000, 9999),
+                'status' => 'active',
+            ]);
+
+            // The number is on associators_infos and assigned by the office
+            // after the fact - which is why the notice has to go looking for it
+            // rather than reading a column off the member.
+            $member->associatorInfo()->create(['membership_no' => 'M-0042']);
+
+            return $member;
+        });
+    }
+
+    /**
+     * THE COLLISION IS ALLOWED, and that is the requirement (SRS OD-4).
+     *
+     * A treasurer is a member of the association whose books she keeps. Refusing
+     * the staff account because a member already holds that email would refuse
+     * the ordinary case, and there is no second email to fall back on.
+     */
+    public function test_an_email_that_is_already_a_members_is_not_refused(): void
+    {
+        $admin = $this->superadmin();
+        $this->member('treasurer@assoc.test');
+
+        $this->withHeaders($this->headers($admin['token']))
+            ->postJson('/api/v1/staff/users', [
+                'name' => 'Rokeya Begum',
+                'email' => 'treasurer@assoc.test',
+                'password' => 'staff-password',
+                'role' => 'operator',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('data.email', 'treasurer@assoc.test');
+    }
+
+    /**
+     * ...but it is SAID, because of what it costs at sign-in.
+     *
+     * Both accounts are tried and the password picks one, so two different
+     * passwords resolve silently. One password opening both is ambiguous, and
+     * she is then asked which she means every single time - which the person
+     * creating the account can prevent, but only while choosing this password.
+     */
+    public function test_creating_one_warns_that_the_email_is_already_a_members(): void
+    {
+        $admin = $this->superadmin();
+        $this->member('treasurer@assoc.test');
+
+        $notice = $this->withHeaders($this->headers($admin['token']))
+            ->postJson('/api/v1/staff/users', [
+                'name' => 'Rokeya Begum',
+                'email' => 'treasurer@assoc.test',
+                'password' => 'staff-password',
+                'role' => 'operator',
+            ])
+            ->assertCreated()
+            ->json('meta.notice');
+
+        $this->assertNotNull($notice, 'The collision was created with nothing said about it.');
+
+        // WHO, so it can be recognised as the right person rather than a
+        // stranger who happens to share an address.
+        $this->assertStringContainsString('Rokeya Begum', (string) $notice);
+        $this->assertStringContainsString('M-0042', (string) $notice);
+
+        // And what to do about it, which is the only actionable part.
+        $this->assertStringContainsString('DIFFERENT', (string) $notice);
+    }
+
+    /** No collision, nothing said. A notice shown always is a notice ignored. */
+    public function test_an_ordinary_account_is_created_with_no_notice(): void
+    {
+        $admin = $this->superadmin();
+        $this->member('treasurer@assoc.test');
+
+        $this->withHeaders($this->headers($admin['token']))
+            ->postJson('/api/v1/staff/users', [
+                'name' => 'Counter Clerk',
+                'email' => 'clerk@assoc.test',
+                'password' => 'clerk-password',
+                'role' => 'operator',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('meta.notice', null);
+    }
+
+    /** Editing an account ONTO a member's email is the same event, later. */
+    public function test_moving_an_email_onto_a_members_warns_the_same_way(): void
+    {
+        $admin = $this->superadmin();
+        $this->member('treasurer@assoc.test');
+
+        $id = $this->withHeaders($this->headers($admin['token']))
+            ->postJson('/api/v1/staff/users', [
+                'name' => 'Rokeya Begum',
+                'email' => 'rokeya@assoc.test',
+                'password' => 'staff-password',
+                'role' => 'operator',
+            ])
+            ->assertJsonPath('meta.notice', null)
+            ->json('data.id');
+
+        $moved = $this->withHeaders($this->headers($admin['token']))
+            ->putJson("/api/v1/staff/users/{$id}", ['email' => 'treasurer@assoc.test'])
+            ->assertSuccessful()
+            ->json('meta.notice');
+
+        $this->assertStringContainsString('Rokeya Begum', (string) $moved);
+
+        /*
+         * Saving the same account again, with the email left where it is, says
+         * nothing. A warning repeated on every edit of a long-standing account
+         * is one nobody reads, including on the day it matters.
+         */
+        $this->withHeaders($this->headers($admin['token']))
+            ->putJson("/api/v1/staff/users/{$id}", ['name' => 'Rokeya Begum Chowdhury'])
+            ->assertSuccessful()
+            ->assertJsonPath('meta.notice', null);
     }
 
     // ---- the lockout guards ----------------------------------------------

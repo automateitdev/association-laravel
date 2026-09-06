@@ -10,7 +10,9 @@ use App\Models\Tenant\Member;
 use App\Models\Tenant\PaymentInfo;
 use App\Services\GatewayService;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Request;
+use RuntimeException;
 use Illuminate\Support\Facades\Log;
 
 class GatewayController extends Controller
@@ -45,7 +47,57 @@ class GatewayController extends Controller
                 ]),
             );
         } catch (\DomainException $e) {
+            // Our own refusal - "this payment is already completed". The message
+            // names the situation, so it goes through as it stands.
             throw new ApiException('GATEWAY_SESSION_REFUSED', $e->getMessage(), 409);
+        } catch (ConnectionException $e) {
+            /*
+             * The gateway could not be reached at all: DNS, TLS, a timeout, a
+             * bank with its shutters down.
+             *
+             * ITS OWN CODE, because it is the one failure where the member
+             * should be told plainly that nothing was charged. Left as a 500 it
+             * reached them as "Something went wrong. Please try again." - a
+             * shrug about their money, for a condition we know exactly.
+             *
+             * The detail is logged rather than returned. A cURL error naming a
+             * certificate path on our server is a fact about our deployment,
+             * not something a member can act on, and it is in the log where an
+             * operator will look.
+             */
+            Log::error('Gateway unreachable while starting a session', [
+                'tenant' => tenant()?->getKey(),
+                'invoice_no' => $record->invoice_no,
+                'error' => $e->getMessage(),
+            ]);
+
+            throw new ApiException(
+                'GATEWAY_UNREACHABLE',
+                'We could not reach the payment gateway. Nothing has been charged - '
+                    .'please try again in a moment, or pay at the bank instead.',
+                503,
+            );
+        } catch (RuntimeException $e) {
+            /*
+             * The gateway answered and said no - bad credentials, an AR account
+             * it does not recognise, a malformed request.
+             *
+             * The member gets a clean sentence; the bank's own words go to the
+             * log. They are written for whoever integrated the gateway, tend to
+             * carry a raw response body, and are not a member's problem.
+             */
+            Log::error('Gateway refused a session', [
+                'tenant' => tenant()?->getKey(),
+                'invoice_no' => $record->invoice_no,
+                'error' => $e->getMessage(),
+            ]);
+
+            throw new ApiException(
+                'GATEWAY_SESSION_REFUSED',
+                'The payment gateway would not start this payment. Nothing has been charged - '
+                    .'please tell your association, or pay at the bank instead.',
+                502,
+            );
         }
 
         return response()->json([

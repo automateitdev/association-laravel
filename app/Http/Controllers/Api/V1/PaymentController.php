@@ -232,6 +232,22 @@ class PaymentController extends Controller
 
             'payment_date' => $payment->payment_date?->toDateString(),
             'expires_at' => $payment->expires_at?->toIso8601String(),
+
+            /*
+             * Whether this payment ever reached the gateway.
+             *
+             * A BOOLEAN, not the reference itself: the reference is a gateway
+             * session token and the client has no use for one, so handing it
+             * over would be widening the blast radius of a stolen response for
+             * nothing.
+             *
+             * The app needs the distinction because the two failures look
+             * identical to a member and are not. A payment with a reference is
+             * waiting on the bank; one without never got that far - the session
+             * call failed - and telling somebody "waiting for the bank to
+             * confirm" in that case is a lie that ends with them paying twice.
+             */
+            'gateway_started' => $payment->gateway_reference !== null,
         ];
 
         $data['documents'] = $this->documents->list($payment);

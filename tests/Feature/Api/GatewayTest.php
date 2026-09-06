@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Tests\Feature\Api;
 
 use App\Models\Tenant\FeeAssign;
+use App\Contracts\PaymentGateway;
+use Illuminate\Http\Client\ConnectionException;
 use App\Models\Tenant\GatewayEvent;
 use App\Models\Tenant\LedgerTrace;
 use App\Models\Tenant\PaymentInfo;
@@ -17,6 +19,7 @@ use App\Services\TenantSeedService;
 use App\Support\Gateway\GatewayVerification;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Str;
+use RuntimeException;
 use Tests\Support\TenantFixtures;
 use Tests\TenantTestCase;
 
@@ -85,6 +88,108 @@ class GatewayTest extends TenantTestCase
             ->json('data');
 
         return [$payment, $session];
+    }
+
+    // ---- when the gateway cannot be reached ------------------------------
+
+    /**
+     * A gateway that will not answer must not read as "something went wrong".
+     *
+     * This is the failure a member actually met. The session call threw a
+     * connection exception, it left the controller as a 500, and the app - which
+     * only has a generic line for a response carrying no envelope - told them
+     * "Something went wrong. Please try again." about their money.
+     *
+     * Worse, the payment screen then said "waiting for the bank to confirm"
+     * about a payment the bank had never been sent. A member reads that, waits,
+     * and eventually pays twice.
+     */
+    public function test_an_unreachable_gateway_says_so_and_says_nothing_was_charged(): void
+    {
+        [$member, $token, $assign] = $this->memberWithDues();
+
+        $payment = $this->withHeaders($this->headers($token) + ['Idempotency-Key' => (string) Str::uuid()])
+            ->postJson('/api/v1/payments', ['fee_assign_ids' => [$assign->id], 'payment_type' => 'online'])
+            ->assertStatus(201)
+            ->json('data');
+
+        $this->mock(PaymentGateway::class, function ($mock) {
+            $mock->shouldReceive('createSession')
+                ->andThrow(new ConnectionException('cURL error 77: error setting certificate file'));
+        });
+
+        $response = $this->withHeaders($this->headers($token))
+            ->postJson("/api/v1/payments/{$payment['id']}/gateway-session")
+            ->assertStatus(503)
+            ->assertJsonPath('error.code', 'GATEWAY_UNREACHABLE');
+
+        // The member is told the one thing that matters about their money.
+        $this->assertStringContainsString('Nothing has been charged', $response->json('error.message'));
+
+        // And the cURL detail - a fact about OUR server - is not handed to them.
+        $this->assertStringNotContainsString('certificate', $response->json('error.message'));
+    }
+
+    /**
+     * A payment that never reached the gateway must be distinguishable.
+     *
+     * `gateway_started` is what lets the app stop claiming a bank is confirming
+     * something it was never sent. A boolean rather than the reference itself:
+     * a gateway session token is no use to a client.
+     */
+    public function test_a_payment_reports_whether_it_ever_reached_the_gateway(): void
+    {
+        [$member, $token, $assign] = $this->memberWithDues();
+
+        $payment = $this->withHeaders($this->headers($token) + ['Idempotency-Key' => (string) Str::uuid()])
+            ->postJson('/api/v1/payments', ['fee_assign_ids' => [$assign->id], 'payment_type' => 'online'])
+            ->json('data');
+
+        $this->withHeaders($this->headers($token))
+            ->getJson("/api/v1/payments/{$payment['id']}")
+            ->assertOk()
+            ->assertJsonPath('data.gateway_started', false);
+
+        $this->withHeaders($this->headers($token))
+            ->postJson("/api/v1/payments/{$payment['id']}/gateway-session")
+            ->assertOk();
+
+        $this->withHeaders($this->headers($token))
+            ->getJson("/api/v1/payments/{$payment['id']}")
+            ->assertOk()
+            ->assertJsonPath('data.gateway_started', true)
+
+            // The reference itself stays on our side.
+            ->assertJsonMissingPath('data.gateway_reference');
+    }
+
+    /**
+     * A gateway that answered and refused is a different fact from one that
+     * could not be reached, and the member is told a different thing: tell your
+     * association, rather than try again in a moment.
+     */
+    public function test_a_refused_session_is_reported_separately_from_an_unreachable_one(): void
+    {
+        [$member, $token, $assign] = $this->memberWithDues();
+
+        $payment = $this->withHeaders($this->headers($token) + ['Idempotency-Key' => (string) Str::uuid()])
+            ->postJson('/api/v1/payments', ['fee_assign_ids' => [$assign->id], 'payment_type' => 'online'])
+            ->json('data');
+
+        $this->mock(PaymentGateway::class, function ($mock) {
+            $mock->shouldReceive('createSession')
+                ->andThrow(new RuntimeException('SPG refused: invalid AR account 000123'));
+        });
+
+        $response = $this->withHeaders($this->headers($token))
+            ->postJson("/api/v1/payments/{$payment['id']}/gateway-session")
+            ->assertStatus(502)
+            ->assertJsonPath('error.code', 'GATEWAY_SESSION_REFUSED');
+
+        // The bank's own words are for the log, not for a member: they are
+        // written for whoever integrated the gateway and carry raw responses.
+        $this->assertStringNotContainsString('AR account', $response->json('error.message'));
+        $this->assertStringContainsString('Nothing has been charged', $response->json('error.message'));
     }
 
     // ---- session ---------------------------------------------------------

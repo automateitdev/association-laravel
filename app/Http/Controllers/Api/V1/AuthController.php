@@ -8,6 +8,7 @@ use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Models\Tenant\FeeAssign;
 use App\Models\Tenant\Member;
+use App\Models\Tenant\MemberProfileUpdate;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -166,6 +167,24 @@ class AuthController extends Controller
                 'status' => $account->status,
                 'membership_no' => $account->associatorInfo?->membership_no,
                 'shares' => (int) ($account->associatorInfo?->num_or_shares ?? 0),
+
+                /*
+                 * The fields a member may ask to have changed (FR-MEM-8), so
+                 * the app can show what is on file before they ask.
+                 *
+                 * Without these a change form starts empty, and a member cannot
+                 * tell whether the office already holds their father's name or
+                 * simply never asked for it - so they retype what is already
+                 * there and file a request that changes nothing.
+                 *
+                 * No new exposure: this is the member's own record, returned to
+                 * the member. Deliberately driven by the same ALLOWED list the
+                 * request endpoint validates against, so the two cannot drift
+                 * into showing a field nobody may change.
+                 */
+                'editable' => collect(MemberProfileUpdate::ALLOWED)
+                    ->mapWithKeys(fn (string $field) => [$field => $account->{$field}])
+                    ->all(),
             ];
         }
 

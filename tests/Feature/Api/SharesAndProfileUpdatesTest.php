@@ -113,6 +113,33 @@ class SharesAndProfileUpdatesTest extends TenantTestCase
 
     // ------------------------------------------------------ share transfers
 
+    /**
+     * A member's own record carries the fields they may ask to change.
+     *
+     * Without these the change form starts blank, and a member cannot tell
+     * whether the office already holds their father's name or simply never
+     * asked - so they retype what is there and file a request that changes
+     * nothing. Driven by the same ALLOWED list the request endpoint validates
+     * against, so the two cannot drift into showing a field nobody may change.
+     */
+    public function test_the_member_profile_carries_the_editable_fields(): void
+    {
+        $member = $this->member();
+
+        $response = $this->getJson('/api/v1/me', $this->headers($this->memberToken($member)))
+            ->assertOk();
+
+        foreach (\App\Models\Tenant\MemberProfileUpdate::ALLOWED as $field) {
+            $response->assertJsonPath("data.profile.editable.{$field}", fn ($value) => true);
+        }
+
+        // Their own values, not somebody's defaults.
+        $this->assertSame(
+            $response->json('data.profile.name'),
+            $response->json('data.profile.editable.name'),
+        );
+    }
+
     public function test_shares_move_between_two_members(): void
     {
         $token = $this->staffToken();

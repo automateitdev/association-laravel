@@ -489,6 +489,136 @@ class StaffApiTest extends TenantTestCase
         ));
     }
 
+    // ---- payments that are with a bank -----------------------------------
+
+    /**
+     * A pending payment and a pending payment AT A GATEWAY, side by side.
+     *
+     * @return array{manual: int, online: int}
+     */
+    private function twoPendingPayments(): array
+    {
+        return $this->inTenant(function () {
+            $this->seedSettings();
+            $ledgers = $this->makeLedgers();
+            $setup = $this->makeFeeSetup([
+                'ledger_id' => $ledgers['income']->id,
+                'fine_ledger_id' => $ledgers['fine']->id,
+            ]);
+
+            $ids = [];
+
+            foreach (['manual', 'online'] as $i => $kind) {
+                $member = $this->makeMember();
+                $assign = app(FeeAssignService::class)->assign($member->id, $setup, '2026-0'.($i + 1));
+                $ids[$kind] = app(PaymentService::class)
+                    ->create($member->id, [$assign->id], ledgerId: $ledgers['cash']->id)->id;
+            }
+
+            // What startSession() stamps before the member leaves for the bank.
+            PaymentInfo::whereKey($ids['online'])->update([
+                'gateway_reference' => 'SPG-REF-0001',
+                'payment_type' => PaymentInfo::TYPE_ONLINE,
+            ]);
+
+            return $ids;
+        });
+    }
+
+    /**
+     * THE QUEUE IS FOR MONEY A HUMAN CONFIRMED ARRIVING.
+     *
+     * A payment with a gateway_reference has been handed to a bank and its
+     * outcome is the bank's to report (ADR-0007): the callback completes it,
+     * `payments:reconcile` asks every ten minutes in case that callback is
+     * lost, and `payments:expire-intents` releases it if it never resolves.
+     *
+     * It used to appear here anyway - the queue selected on status alone - so a
+     * clerk working quickly could approve a payment while the member was still
+     * on the bank's page. That marks the dues paid and posts the ledger for
+     * money that may never have been taken.
+     */
+    public function test_a_payment_at_a_gateway_is_not_offered_for_approval(): void
+    {
+        $token = $this->staffToken();
+        $ids = $this->twoPendingPayments();
+
+        $listed = $this->withHeaders($this->headers($token))
+            ->getJson('/api/v1/staff/payments/pending')
+            ->assertOk()
+            ->json('data.*.id');
+
+        $this->assertContains($ids['manual'], $listed);
+        $this->assertNotContains($ids['online'], $listed);
+    }
+
+    /**
+     * The list hides it; this refuses it. An id can be posted without the
+     * screen - a stale tab, an export worked from, a script.
+     *
+     * The batch containment still holds: the manual payment beside it completes.
+     */
+    public function test_a_payment_at_a_gateway_cannot_be_approved_by_hand(): void
+    {
+        $token = $this->staffToken();
+        $ids = $this->twoPendingPayments();
+
+        $response = $this->withHeaders($this->headers($token))
+            ->postJson('/api/v1/staff/payments/decide', [
+                'payment_ids' => [$ids['manual'], $ids['online']],
+                'decision' => 'completed',
+            ])
+            ->assertStatus(207);
+
+        $this->assertSame(1, $response->json('data.decided'));
+        $this->assertSame(1, $response->json('data.failed'));
+
+        // Said in terms of what happens next, not just refused.
+        $this->assertStringContainsString('with the bank', (string) $response->json('data.results.1.error'));
+
+        $this->inTenant(function () use ($ids) {
+            $this->assertSame(PaymentInfo::STATUS_COMPLETED, PaymentInfo::find($ids['manual'])->status);
+            $this->assertSame(PaymentInfo::STATUS_PENDING, PaymentInfo::find($ids['online'])->status);
+        });
+    }
+
+    /**
+     * Suspending is refused too, and for the same reason in reverse: released
+     * here while the bank is still processing, the callback would complete it
+     * afterwards out of a status nobody expected it to leave.
+     */
+    public function test_a_payment_at_a_gateway_cannot_be_suspended_by_hand(): void
+    {
+        $token = $this->staffToken();
+        $ids = $this->twoPendingPayments();
+
+        $this->withHeaders($this->headers($token))
+            ->postJson('/api/v1/staff/payments/decide', [
+                'payment_ids' => [$ids['online']],
+                'decision' => 'suspended',
+                'reason' => 'Looks stuck.',
+            ])
+            ->assertStatus(207)
+            ->assertJsonPath('data.decided', 0);
+
+        $this->inTenant(fn () => $this->assertSame(
+            PaymentInfo::STATUS_PENDING,
+            PaymentInfo::find($ids['online'])->status
+        ));
+    }
+
+    /** The dashboard figure sends somebody to that queue, so it counts the same rows. */
+    public function test_the_dashboard_counts_only_what_the_queue_holds(): void
+    {
+        $token = $this->staffToken();
+        $this->twoPendingPayments();
+
+        $this->withHeaders($this->headers($token))
+            ->getJson('/api/v1/staff/dashboard')
+            ->assertOk()
+            ->assertJsonPath('data.payments_pending_approval', 1);
+    }
+
     // ---- reports ---------------------------------------------------------
 
     /**

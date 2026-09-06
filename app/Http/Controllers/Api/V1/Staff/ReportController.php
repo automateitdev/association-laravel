@@ -367,7 +367,15 @@ class ReportController extends Controller
                     'instalments' => $this->money(FeeAssign::outstanding()->sum('amount')),
                     'fines' => $this->money(FeeAssign::outstanding()->sum('fine_amount')),
                 ],
-                'payments_pending_approval' => PaymentInfo::where('status', PaymentInfo::STATUS_PENDING)->count(),
+                /*
+                 * What the approval queue actually holds - so the figure that
+                 * sends somebody to that screen matches what they find there.
+                 * Payments with a gateway_reference are the bank's to resolve
+                 * and are not offered for approval (ADR-0007).
+                 */
+                'payments_pending_approval' => PaymentInfo::where('status', PaymentInfo::STATUS_PENDING)
+                    ->whereNull('gateway_reference')
+                    ->count(),
             ],
         ]);
     }

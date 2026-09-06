@@ -188,6 +188,21 @@ class PaymentApprovalController extends Controller
             ->select('payment_infos.*')
             ->with(['member:id,name', 'member.associatorInfo:id,member_id,membership_no', 'items'])
             ->where('payment_infos.status', PaymentInfo::STATUS_PENDING)
+            /*
+             * NOT payments that are with a bank (ADR-0007).
+             *
+             * A `gateway_reference` means this payment was handed to a gateway
+             * and the member is - or was - on the bank's page. Its outcome is
+             * the bank's to report: the callback completes it, `payments:
+             * reconcile` asks every ten minutes in case the callback is lost,
+             * and `payments:expire-intents` releases it if it never resolves.
+             *
+             * Approval is for money a human confirmed arriving. Here nobody has
+             * confirmed anything yet, and approving it would mark the dues paid
+             * and post the ledger for money that may never have been taken.
+             * Listing it at all invites exactly that on a queue worked quickly.
+             */
+            ->whereNull('payment_infos.gateway_reference')
             // When the member submitted it - the only date on a pending
             // payment, since it has not been approved or paid yet.
             ->when($filters['from'], fn ($q, $d) => $q->whereDate('payment_infos.created_at', '>=', $d))
@@ -299,6 +314,28 @@ class PaymentApprovalController extends Controller
 
             if (! $payment) {
                 $results[] = ['payment_id' => $id, 'ok' => false, 'error' => 'Not found.'];
+
+                continue;
+            }
+
+            /*
+             * The list above hides these; this refuses them. The screen is a
+             * courtesy, and an id can be posted without it - stale tab, a
+             * export worked from, a script.
+             *
+             * Suspending is refused too, and for the same reason in reverse: a
+             * payment released here while the bank is still processing it would
+             * be completed by the callback afterwards, out of a status nobody
+             * expected it to leave.
+             */
+            if ($payment->gateway_reference !== null && $payment->isPending()) {
+                $results[] = [
+                    'payment_id' => $id,
+                    'ok' => false,
+                    'error' => "{$payment->invoice_no} is with the bank. It completes when the bank "
+                        .'confirms it, and is released automatically if it never does - deciding it '
+                        .'here would record money that may never have been taken.',
+                ];
 
                 continue;
             }

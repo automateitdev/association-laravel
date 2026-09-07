@@ -8,7 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Tenant\AuditLog;
 use App\Models\Tenant\GatewayCredential;
 use App\Models\Tenant\Setting;
-use App\Services\Gateways\SonaliPaymentGateway;
+use App\Services\GatewayConfigurator;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -129,14 +129,38 @@ class SettingsController extends Controller
         ];
     }
 
+    /**
+     * WHICHEVER GATEWAY THE ASSOCIATION IS ON - not a hard-coded `spg`.
+     *
+     * An association reaches the same bank one of two ways, directly or through
+     * PayFlex, and it uses one of them (the table now refuses two active rows).
+     * This asked only about the direct provider, so an association moved onto
+     * PayFlex read its own settings screen as "no gateway configured, online
+     * payment cannot be taken" while it was in fact taking payments - and one
+     * that had been on the direct route first was shown the AR account of the
+     * dead row it had left.
+     *
+     * The active row first, then the most recent: a gateway switched off is
+     * still the one they have, and saying "not configured" about it would send
+     * somebody to ask the platform for credentials that are already there.
+     */
     private function gatewaySummary(): array
     {
         $credential = GatewayCredential::query()
-            ->where('provider', SonaliPaymentGateway::PROVIDER)
+            ->orderByDesc('is_active')
+            ->orderByDesc('updated_at')
+            ->orderByDesc('id')
             ->first();
 
         return [
-            'provider' => SonaliPaymentGateway::PROVIDER,
+            'provider' => $credential?->provider,
+
+            // The name a person uses for it. `payflex_spg` is a routing key we
+            // made up, and the app was rendering it verbatim in capitals.
+            'label' => $credential
+                ? (GatewayConfigurator::PROVIDERS[$credential->provider]['label'] ?? $credential->provider)
+                : null,
+
             'configured' => $credential !== null,
             'is_active' => (bool) $credential?->is_active,
 

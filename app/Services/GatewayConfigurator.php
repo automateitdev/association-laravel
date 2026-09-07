@@ -308,13 +308,35 @@ class GatewayConfigurator
     public function enable(Tenant $tenant, string $source): void
     {
         $found = $tenant->run(function () {
-            $credential = GatewayCredential::query()->orderByDesc('updated_at')->first();
+            $credential = GatewayCredential::query()
+                ->orderByDesc('updated_at')
+                ->orderByDesc('id')
+                ->first();
 
             if (! $credential) {
                 return false;
             }
 
-            $credential->update(['is_active' => true]);
+            /*
+             * The others go off FIRST, as in store(). This used to activate a
+             * row without touching them, and relied on there never having been
+             * a second active one to begin with - which is a rule about money
+             * resting on every other caller having remembered it.
+             *
+             * The tie-break on id matters for the same reason: store() writes
+             * both rows in one transaction, so `updated_at` alone can be a tie,
+             * and "resume online payment" would then pick a provider by row
+             * order. Since 2026_09_07_000100 the table refuses two active rows
+             * outright, so the ordering decides WHICH one resumes rather than
+             * whether the association ends up with both.
+             */
+            DB::transaction(function () use ($credential) {
+                GatewayCredential::whereKeyNot($credential->getKey())
+                    ->where('is_active', true)
+                    ->update(['is_active' => false]);
+
+                $credential->update(['is_active' => true]);
+            });
 
             return true;
         });

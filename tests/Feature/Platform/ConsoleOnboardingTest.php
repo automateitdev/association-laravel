@@ -299,6 +299,76 @@ class ConsoleOnboardingTest extends TenantTestCase
         );
     }
 
+    /**
+     * RESUMING MUST NOT WAKE THE OLD PROVIDER.
+     *
+     * `enable()` activated a row without switching the others off, and picked
+     * it by `updated_at` alone - which store() leaves tied, because it writes
+     * both rows in one transaction. An association that had moved from the
+     * direct route to PayFlex, switched online payment off for an afternoon and
+     * switched it back on could therefore resume on the provider it had left,
+     * collecting into the AR account of the row it thought was dead.
+     */
+    public function test_resuming_online_payment_does_not_wake_the_old_provider(): void
+    {
+        $this->signIn($this->operator());
+
+        $this->configure();                       // direct
+        $this->configure([], 'payflex_spg');      // then PayFlex
+
+        $this->post("/platform/tenants/{$this->slug()}/gateway/toggle", ['action' => 'disable']);
+        $this->post("/platform/tenants/{$this->slug()}/gateway/toggle", ['action' => 'enable']);
+
+        $active = $this->inTenant(
+            fn () => GatewayCredential::where('is_active', true)->pluck('provider')->all()
+        );
+
+        $this->assertSame([PayflexSpgGateway::PROVIDER], $active);
+    }
+
+    /**
+     * AND THE TABLE ITSELF REFUSES THE SECOND ONE.
+     *
+     * Every rule above lives in one service, and the callers are the console,
+     * `tenant:gateway`, and whatever a support fix types at a mysql prompt. Two
+     * active rows do not produce an error anywhere - they make
+     * `GatewayRegistry::activeProvider()` return whichever row comes back
+     * first, so the association keeps taking payments through the provider it
+     * thought it had left, into that row's account, with nothing reporting a
+     * problem.
+     *
+     * So it is a unique index, and this test is the proof that the index is on
+     * rather than a comment saying it should be.
+     */
+    public function test_the_database_refuses_a_second_active_gateway(): void
+    {
+        $this->signIn($this->operator());
+
+        $this->configure();                       // direct, then switched off by
+        $this->configure([], 'payflex_spg');      // PayFlex, which is now active
+
+        $this->expectException(\Illuminate\Database\QueryException::class);
+
+        $this->inTenant(fn () => GatewayCredential::where('provider', SonaliPaymentGateway::PROVIDER)
+            ->update(['is_active' => true]));
+    }
+
+    /** Switching off stays repeatable: only ACTIVE is the thing there can be one of. */
+    public function test_every_gateway_may_be_switched_off_at_once(): void
+    {
+        $this->signIn($this->operator());
+
+        $this->configure();
+        $this->configure([], 'payflex_spg');
+
+        $this->post("/platform/tenants/{$this->slug()}/gateway/toggle", ['action' => 'disable']);
+
+        $this->assertSame(
+            0,
+            $this->inTenant(fn () => GatewayCredential::where('is_active', true)->count())
+        );
+    }
+
     public function test_the_registry_picks_the_adapter_the_association_configured(): void
     {
         $this->signIn($this->operator());

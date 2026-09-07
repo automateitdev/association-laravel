@@ -163,21 +163,36 @@ jobs:
           printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
+      # TAR OVER SSH, NOT RSYNC. rsync has to exist on BOTH ends and is not on
+      # a minimal Ubuntu; tar is, because it is an essential package. Nothing is
+      # lost by the swap either: every release goes into its own empty directory
+      # named by commit, so rsync's incremental transfer and --delete had
+      # nothing to be incremental about and nothing to delete.
+      #
+      # The excludes are written './name' so they anchor to the top level.
+      # Unanchored, '--exclude=tests' would also drop vendor/*/tests and
+      # '--exclude=storage' any vendor directory of that name.
       - name: Upload the release
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
+          RELEASE: ${{ github.sha }}
         run: |
-          rsync -az --delete \
-            -e "ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes" \
-            --exclude '.git' \
-            --exclude '.github' \
-            --exclude 'node_modules' \
-            --exclude 'tests' \
-            --exclude '.env' \
-            --exclude '.env.*' \
-            --exclude 'storage' \
-            ./ "$SSH_USER@$SSH_HOST:$DEPLOY_PATH/releases/${{ github.sha }}/"
+          # Without pipefail a failing tar is hidden by ssh's exit status, and
+          # a truncated release would go live looking like a success.
+          set -o pipefail
+
+          tar -czf - \
+            --exclude='./.git' \
+            --exclude='./.github' \
+            --exclude='./node_modules' \
+            --exclude='./tests' \
+            --exclude='./.env' \
+            --exclude='./.env.*' \
+            --exclude='./storage' \
+            . \
+          | ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes "$SSH_USER@$SSH_HOST" \
+              "mkdir -p '$DEPLOY_PATH/releases/$RELEASE' && tar -xzf - -C '$DEPLOY_PATH/releases/$RELEASE'"
 
       # The script lives in the repo rather than in this file: it is the part
       # that touches a database with real money in it, and it should be

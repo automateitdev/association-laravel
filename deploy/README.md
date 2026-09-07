@@ -227,7 +227,9 @@ Repository **variables** (Settings → Variables), both optional:
    resolved. There is no npm step: the only view using `@vite` falls back to
    inline CSS when there is no manifest, so the build produced nothing anyone
    would see.
-3. rsync into `releases/<sha>` — `.env` and `storage` are excluded, then linked.
+3. The tree is streamed as a tar into `releases/<sha>` — `.env` and `storage`
+   are excluded from it, then linked in from `shared/`. tar rather than rsync so
+   the server needs nothing installed for a deploy to work.
 4. Maintenance mode on.
 5. `migrate --force`, then `tenants:migrate --force`. Central first: it holds the
    `tenants` table the second command reads.

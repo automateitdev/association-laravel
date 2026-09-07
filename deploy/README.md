@@ -13,7 +13,7 @@ run by hand.
 
 ## 1. What the server needs, once
 
-Ubuntu with nginx, php-fpm 8.3 and MySQL 8. Nothing here is repeated by the
+Ubuntu with nginx, php-fpm, MySQL 8 and redis. Nothing here is repeated by the
 pipeline, so it has to be right before the first deploy.
 
 ```bash
@@ -40,10 +40,10 @@ php -v
 
 Two of those are not optional, in different ways.
 
-`php8.3-bcmath`: every money figure the server computes goes through bcmath,
+`php-bcmath`: every money figure the server computes goes through bcmath,
 because floats do not reconcile (FR-MON-4).
 
-`php8.3-cli` is listed separately from `-fpm` because it is a separate package
+`php-cli` is listed separately from `-fpm` because it is a separate package
 and fpm does not pull it in. Without it the deploy uploads perfectly and then
 dies on `php: command not found`, since every step of `release.sh` is an artisan
 command.
@@ -166,30 +166,56 @@ entirely: `release.sh` reloads directly when it is already root.
 
 ### nginx
 
-```nginx
-server {
-    listen 80;
-    server_name test.example.org;
-    root /var/www/bcs/current/public;
+Two vhosts, on ports rather than hostnames: `nginx/bcs-api.conf` serves the API
+and console on **:8000**, `nginx/bcs-app.conf` serves the app on **:8001**.
+Ports because telling two vhosts apart by `server_name` needs DNS pointed here,
+and ports need nothing — this works on a bare IP today and moves to names and
+TLS later without the deploy changing at all.
 
-    index index.php;
-    charset utf-8;
+```bash
+cp /var/www/bcs/current/deploy/nginx/bcs-api.conf /etc/nginx/sites-available/
+cp /var/www/bcs/current/deploy/nginx/bcs-app.conf /etc/nginx/sites-available/
+ln -s /etc/nginx/sites-available/bcs-api.conf /etc/nginx/sites-enabled/
+ln -s /etc/nginx/sites-available/bcs-app.conf /etc/nginx/sites-enabled/
 
-    location / { try_files $uri $uri/ /index.php?$query_string; }
-
-    location ~ \.php$ {
-        # Match the PHP you installed: `ls /run/php/`.
-        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
-        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
-        include fastcgi_params;
-    }
-
-    location ~ /\.(?!well-known).* { deny all; }
-}
+# Set the socket to match your PHP before this passes.
+ls /run/php/
+nginx -t && systemctl reload nginx
 ```
 
-`$realpath_root`, not `$document_root`: with a symlinked release the two differ,
-and the wrong one leaves php-fpm serving whatever opcache remembers.
+If a firewall is on: `ufw allow 8000/tcp && ufw allow 8001/tcp`.
+
+Everything else has to agree with the ports:
+
+| Where | Setting | Value |
+|---|---|---|
+| `shared/.env` | `APP_URL` | `http://<host>:8000` |
+| bcs-app-rn variables | `BCS_API_URL` | `http://<host>:8000/api/v1` |
+| bcs-app-rn variables | `WEB_ROOT` | `/var/www/bcs-app` |
+
+`BCS_API_URL` is compiled into the bundle, so changing it means re-running the
+app workflow — there is no runtime override.
+
+### Upload sizes, in three places
+
+A member may attach five 8 MB documents to one payment, so a legitimate request
+reaches about 40 MB. Three limits sit in front of that and the smallest wins;
+the two defaults both reject it, and neither says anything useful to the member.
+
+- nginx: `client_max_body_size 48m` — already in `bcs-api.conf`. Its default of
+  1 MB rejects the request with a 413 before PHP ever sees it.
+- PHP: defaults are `upload_max_filesize = 2M` and `post_max_size = 8M`. Put
+  this in `/etc/php/<version>/fpm/conf.d/99-bcs.ini` and reload fpm:
+
+  ```ini
+  upload_max_filesize = 8M
+  post_max_size = 48M
+  ```
+
+- The application: `PaymentDocumentService::MAX_BYTES` (8 MB) and
+  `MAX_PER_PAYMENT` (5). This is the one that produces a sentence a member can
+  act on, so it should stay the *smallest* of the three — raise the other two
+  above it, never to exactly it.
 
 ### The scheduler and the queue
 
@@ -288,7 +314,7 @@ If no migration ran, a rollback is two commands:
 
 ```bash
 ln -sfn /var/www/bcs/releases/<previous-sha> /var/www/bcs/current
-sudo systemctl reload php8.3-fpm
+systemctl reload "$(systemctl list-units --type=service --no-legend 'php*-fpm.service' | awk '{print $1}')"
 ```
 
 If one did, roll the schema back first. There is no automatic path for that, and
@@ -300,30 +326,23 @@ the data back.
 ## 4. The app in a browser
 
 `bcs-app-rn` has its own workflow (`.github/workflows/deploy-web.yml`) that
-exports the Expo app as static files and rsyncs them to a second vhost on this
-same server. It uses the **same four SSH secrets** — put them in that
-repository's `test` environment too — plus two variables:
+exports the Expo app as static files and uploads them to the **:8001** vhost
+above. It uses the **same four SSH secrets** — put them in that repository's
+`test` environment too — plus:
 
 | Variable | Example | What |
 |---|---|---|
-| `BCS_API_URL` | `https://test.example.org/api/v1` | Required. Without it the build points at localhost and every request fails in a way that looks like the API is down |
+| `BCS_API_URL` | `http://203.0.113.10:8000/api/v1` | **Required.** Baked into the bundle at build time; without it the build points at localhost and every request fails in a way that looks like the API is down |
 | `WEB_ROOT` | `/var/www/bcs-app` | Where the static files land |
-| `BCS_TENANT_HOST_SUFFIX` | `bcs.example.org` | Optional. Set it and `demo-one.bcs.example.org` resolves the association from the hostname, so testers never type a slug |
+| `BCS_TENANT_HOST_SUFFIX` | `bcs.example.org` | Optional, and only meaningful once associations have their own subdomains. Set it and `demo-one.bcs.example.org` resolves the association from the hostname, so testers never type a slug |
 
-```nginx
-server {
-    listen 80;
-    server_name app.example.org *.bcs.example.org;
-    root /var/www/bcs-app;
+Two things about this pipeline that differ from the API's:
 
-    # expo-router exports `output: "static"`, so every route is a real file.
-    # The fallback is for deep links that arrive before the file exists.
-    location / { try_files $uri $uri.html $uri/ /index.html; }
-}
-```
-
-The wildcard `server_name` is what makes `BCS_TENANT_HOST_SUFFIX` worth setting:
-one vhost serves every association, and the hostname names which.
+- **There is no test gate.** The app repo has no JS test runner, so the only
+  check before deploy is `tsc --noEmit`. Green means it compiles.
+- **It deploys independently.** A push touching only the app does not redeploy
+  the API and vice versa, so the two can drift. Change an API contract and both
+  need pushing.
 
 No CORS setup is needed: `config/cors.php` allows every origin, which is safe
 here only because the API is token-authenticated and carries no cookies

@@ -222,8 +222,11 @@ Repository **variables** (Settings → Variables), both optional:
 
 1. **Tests first.** The deploy job `needs: tests`, so nothing reaches the server
    that has not just passed against that exact commit.
-2. Composer and npm run **on the runner**, so the server needs neither, and what
-   ships is exactly what `composer.lock` resolved.
+2. Composer runs **on the runner**, so the server needs no composer and no
+   network to packagist, and what ships is exactly what `composer.lock`
+   resolved. There is no npm step: the only view using `@vite` falls back to
+   inline CSS when there is no manifest, so the build produced nothing anyone
+   would see.
 3. rsync into `releases/<sha>` — `.env` and `storage` are excluded, then linked.
 4. Maintenance mode on.
 5. `migrate --force`, then `tenants:migrate --force`. Central first: it holds the

@@ -138,13 +138,17 @@ jobs:
       # exactly what was resolved from composer.lock.
       - run: composer install --no-dev --prefer-dist --no-interaction --no-progress --optimize-autoloader
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-
-      - run: npm ci
-      - run: npm run build
+      # NO NPM STEP, deliberately. This repo has a package.json for Laravel's
+      # stock vite scaffolding and nothing that uses it: the only view with
+      # @vite is welcome.blade.php, which checks for build/manifest.json and
+      # falls back to inline CSS when there is none - so the page is identical
+      # either way. There has never been a lockfile or a node_modules here, and
+      # `cache: npm` failed for exactly that reason.
+      #
+      # If a real front end is ever added, commit package-lock.json first and
+      # put `npm ci && npm run build` back here. `npm install` in CI is not the
+      # answer: it resolves fresh versions on every deploy, so what ships stops
+      # being what was tested.
 
       - name: SSH key and host pin
         env:

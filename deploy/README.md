@@ -17,13 +17,22 @@ Ubuntu with nginx, php-fpm 8.3 and MySQL 8. Nothing here is repeated by the
 pipeline, so it has to be right before the first deploy.
 
 ```bash
-sudo apt install -y nginx mysql-server \
+sudo apt install -y nginx mysql-server redis-server \
   php8.3-fpm php8.3-mysql php8.3-bcmath php8.3-mbstring \
-  php8.3-intl php8.3-gd php8.3-zip php8.3-curl php8.3-xml
+  php8.3-intl php8.3-gd php8.3-zip php8.3-curl php8.3-xml php8.3-redis
 ```
 
-`php8.3-bcmath` is not optional. Every money figure the server computes goes
-through bcmath, because floats do not reconcile (FR-MON-4).
+Two of those are not optional, in different ways.
+
+`php8.3-bcmath`: every money figure the server computes goes through bcmath,
+because floats do not reconcile (FR-MON-4).
+
+`redis` **is part of the isolation boundary**, not a performance choice. Tenant
+cache scoping is implemented with cache *tags*, and the `database` and `file`
+drivers do not support them — a non-taggable store would serve one association's
+cached figures to another, silently, with no error (threat T-2). The application
+refuses to boot on one, so getting this wrong fails the deploy rather than
+leaking — but it fails at the last step, after the migrations have already run.
 
 ### Directory layout
 
@@ -75,6 +84,10 @@ APP_URL=https://test.example.org
 
 DB_CONNECTION=mysql
 DB_DATABASE=bcs_central
+
+# Not `database`. See above — this is the one the app refuses to boot on.
+CACHE_STORE=redis
+REDIS_HOST=127.0.0.1
 
 # Nothing is collected until somebody deliberately says otherwise (ADR-0010).
 PAYMENT_GATEWAY=fake

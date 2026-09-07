@@ -18,6 +18,22 @@ on:
   pull_request:
   workflow_dispatch:
 
+# EVERY artisan call, including the one composer runs.
+#
+# `composer install` fires `package:discover`, which boots the application -
+# and TenancyGuardServiceProvider refuses to boot on a cache store that cannot
+# do tags, because tenant cache isolation IS tags (threat T-2). On a runner
+# there is no .env yet at that point, so config/cache.php falls back to
+# Laravel's own default of `database`, and the install dies before a single
+# test runs.
+#
+# Set here rather than in a step: a real environment variable outranks .env, so
+# this holds for `key:generate` and everything after it too. `array` is right
+# for a runner - correct isolation, and nothing on a runner needs a cache that
+# outlives the process. The SERVER uses redis; see deploy/README.md.
+env:
+  CACHE_STORE: array
+
 concurrency:
   group: ci-${{ github.ref }}
   # Cancel superseded PR runs; never cancel a run that might be mid-deploy.
@@ -76,8 +92,11 @@ jobs:
 
       # The suite creates every TENANT database it needs, but not the central
       # registry it looks them up in.
+      # Through PHP rather than the mysql client, which is not guaranteed to be
+      # on the runner image and would fail here for a reason that has nothing to
+      # do with this project.
       - name: Central test database
-        run: mysql -h 127.0.0.1 -P 3306 -u root -e 'CREATE DATABASE IF NOT EXISTS bcs_central_test'
+        run: php -r "(new PDO('mysql:host=127.0.0.1;port=3306','root',''))->exec('CREATE DATABASE IF NOT EXISTS bcs_central_test');"
 
       # Serial, not --parallel. Parallel workers share one MySQL server and the
       # tenancy tests create and drop real databases; a first pipeline should

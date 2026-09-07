@@ -1,0 +1,180 @@
+# Test on every push, deploy master to the test server.
+#
+# ONE WORKFLOW, TWO JOBS, and deliberately not two files. `deploy` needs
+# `tests`, so nothing reaches the server that has not just proved itself in the
+# same run against the same commit. A separate deploy workflow triggered on
+# push would race the test workflow and win about half the time.
+#
+# WHAT IS NOT HERE: `pint --test`. The tree is not pint-clean today - about
+# eighty files differ, most of it CRLF line endings from a Windows checkout -
+# so adding it now would mean a red pipeline on day one and a reformat commit
+# touching every file. Run pint once, commit that on its own, then add the
+# check here.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Cancel superseded PR runs; never cancel a run that might be mid-deploy.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      # NFR-INT-4: real MySQL, never SQLite. The audit queries use DATE_FORMAT
+      # and GROUP_CONCAT ... SEPARATOR, the money columns are DECIMAL, and
+      # tenancy cannot be tested on :memory: at all - a tenant database is a
+      # real database, created and dropped per test.
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: PHP 8.3
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          # bcmath is not optional: every money figure the server computes goes
+          # through it, because floats do not reconcile (FR-MON-4).
+          extensions: bcmath, pdo_mysql, mbstring, intl, gd, zip
+          coverage: none
+
+      - name: Cache composer downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/composer/files
+          key: composer-${{ hashFiles('composer.lock') }}
+          restore-keys: composer-
+
+      - run: composer install --prefer-dist --no-interaction --no-progress
+
+      # phpunit.xml carries the database settings; .env is here only for
+      # APP_KEY, which the framework refuses to boot without.
+      - name: Application key
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+
+      # The suite creates every TENANT database it needs, but not the central
+      # registry it looks them up in.
+      - name: Central test database
+        run: mysql -h 127.0.0.1 -P 3306 -u root -e 'CREATE DATABASE IF NOT EXISTS bcs_central_test'
+
+      # Serial, not --parallel. Parallel workers share one MySQL server and the
+      # tenancy tests create and drop real databases; a first pipeline should
+      # fail because the code is wrong, not because two workers collided.
+      - run: php artisan test
+
+  deploy:
+    name: Deploy to test
+    needs: tests
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # Scopes the SSH secrets to this job and gives the deploy its own history
+    # in the Actions UI. Add required reviewers here if this ever fronts prod.
+    environment: test
+
+    concurrency:
+      # Two deploys overlapping would rsync into each other's release and race
+      # the migrations. Queue them instead - never cancel one that is running.
+      group: deploy-test
+      cancel-in-progress: false
+
+    env:
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/var/www/bcs' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: PHP 8.3
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: bcmath, pdo_mysql, mbstring, intl, gd, zip
+          coverage: none
+
+      # Built HERE, not on the server: the test box then needs no composer, no
+      # node, and no network to a package registry, and what is deployed is
+      # exactly what was resolved from composer.lock.
+      - run: composer install --no-dev --prefer-dist --no-interaction --no-progress --optimize-autoloader
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: SSH key and host pin
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          # PINNED, not ssh-keyscan at deploy time. Trusting whatever answers on
+          # the way to a server we are about to hand code to is not a check.
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Upload the release
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          rsync -az --delete \
+            -e "ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes" \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude 'node_modules' \
+            --exclude 'tests' \
+            --exclude '.env' \
+            --exclude '.env.*' \
+            --exclude 'storage' \
+            ./ "$SSH_USER@$SSH_HOST:$DEPLOY_PATH/releases/${{ github.sha }}/"
+
+      # The script lives in the repo rather than in this file: it is the part
+      # that touches a database with real money in it, and it should be
+      # reviewable in a diff and runnable by hand during an incident.
+      - name: Release
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes "$SSH_USER@$SSH_HOST" \
+            'bash -s' -- "$DEPLOY_PATH" "${{ github.sha }}" < deploy/release.sh
+
+      - name: Smoke test
+        env:
+          HEALTH_URL: ${{ vars.HEALTH_URL }}
+        # A deploy that finished is not a deploy that works. /health is the one
+        # endpoint that needs no tenant and no token.
+        if: env.HEALTH_URL != ''
+        run: curl --fail --silent --show-error --max-time 20 "$HEALTH_URL"
+
+      - name: Forget the key
+        if: always()
+        run: rm -f ~/.ssh/id_deploy

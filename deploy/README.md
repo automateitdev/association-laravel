@@ -18,7 +18,7 @@ pipeline, so it has to be right before the first deploy.
 
 ```bash
 sudo apt install -y nginx mysql-server redis-server \
-  php8.3-fpm php8.3-mysql php8.3-bcmath php8.3-mbstring \
+  php8.3-fpm php8.3-cli php8.3-mysql php8.3-bcmath php8.3-mbstring \
   php8.3-intl php8.3-gd php8.3-zip php8.3-curl php8.3-xml php8.3-redis
 ```
 
@@ -26,6 +26,11 @@ Two of those are not optional, in different ways.
 
 `php8.3-bcmath`: every money figure the server computes goes through bcmath,
 because floats do not reconcile (FR-MON-4).
+
+`php8.3-cli` is listed separately from `-fpm` because it is a separate package
+and fpm does not pull it in. Without it the deploy uploads perfectly and then
+dies on `php: command not found`, since every step of `release.sh` is an artisan
+command.
 
 `redis` **is part of the isolation boundary**, not a performance choice. Tenant
 cache scoping is implemented with cache *tags*, and the `database` and `file`
@@ -61,8 +66,13 @@ sudo chown -R deploy:www-data . && sudo chmod -R 775 .
 
 ### `.env`, by hand, exactly once
 
-Copy `.env.example` to `/var/www/bcs/shared/.env` and fill it in. Generate the
-key without an application to run it from, and paste it into `APP_KEY` yourself:
+Write `/var/www/bcs/shared/.env` yourself. The release deliberately carries no
+`.env.example` — nothing that looks like an environment file is ever uploaded,
+so there is nothing to accidentally rename into place. Take the full list of
+keys from `.env.example` in the repo; the minimum for this server is below.
+
+Generate the key first, with no application to run it from, and paste the value
+into `APP_KEY`:
 
 ```bash
 php -r "echo 'base64:'.base64_encode(random_bytes(32)).PHP_EOL;"
@@ -105,10 +115,18 @@ rights on its own schema — it needs to create databases, create users, and gra
 those users rights, which is what `WITH GRANT OPTION` is for:
 
 ```sql
+-- The central registry. `migrate --force` creates the tables in it; it does not
+-- create the database, and non-interactively it cannot offer to.
+CREATE DATABASE bcs_central CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 CREATE USER 'bcs'@'localhost' IDENTIFIED BY '…';
 GRANT ALL PRIVILEGES ON *.* TO 'bcs'@'localhost' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
 ```
+
+Only the central database is made by hand. Every association's is created by
+`tenant:provision`, which is why the user above needs rights across the server
+rather than on one schema.
 
 Without `WITH GRANT OPTION`, provisioning creates the database and then fails
 handing the new user its rights — half a tenant, which is the messiest way for

@@ -167,10 +167,18 @@ entirely: `release.sh` reloads directly when it is already root.
 ### nginx
 
 Two vhosts, on ports rather than hostnames: `nginx/bcs-api.conf` serves the API
-and console on **:8000**, `nginx/bcs-app.conf` serves the app on **:8001**.
+and console on **:9000**, `nginx/bcs-app.conf` serves the app on **:9001**.
 Ports because telling two vhosts apart by `server_name` needs DNS pointed here,
 and ports need nothing — this works on a bare IP today and moves to names and
 TLS later without the deploy changing at all.
+
+9000 is php-fpm's own default TCP port. Debian and Ubuntu ship a unix socket
+instead, so it is normally free — but check before reloading, because a clash
+takes both vhosts down rather than one:
+
+```bash
+ss -lntp | grep -E ':900[01]'
+```
 
 ```bash
 cp /var/www/bcs/current/deploy/nginx/bcs-api.conf /etc/nginx/sites-available/
@@ -183,14 +191,14 @@ ls /run/php/
 nginx -t && systemctl reload nginx
 ```
 
-If a firewall is on: `ufw allow 8000/tcp && ufw allow 8001/tcp`.
+If a firewall is on: `ufw allow 9000/tcp && ufw allow 9001/tcp`.
 
 Everything else has to agree with the ports:
 
 | Where | Setting | Value |
 |---|---|---|
-| `shared/.env` | `APP_URL` | `http://<host>:8000` |
-| bcs-app-rn variables | `BCS_API_URL` | `http://<host>:8000/api/v1` |
+| `shared/.env` | `APP_URL` | `http://<host>:9000` |
+| bcs-app-rn variables | `BCS_API_URL` | `http://<host>:9000/api/v1` |
 | bcs-app-rn variables | `WEB_ROOT` | `/var/www/bcs-app` |
 
 `BCS_API_URL` is compiled into the bundle, so changing it means re-running the
@@ -326,13 +334,13 @@ the data back.
 ## 4. The app in a browser
 
 `bcs-app-rn` has its own workflow (`.github/workflows/deploy-web.yml`) that
-exports the Expo app as static files and uploads them to the **:8001** vhost
+exports the Expo app as static files and uploads them to the **:9001** vhost
 above. It uses the **same four SSH secrets** — put them in that repository's
 `test` environment too — plus:
 
 | Variable | Example | What |
 |---|---|---|
-| `BCS_API_URL` | `http://203.0.113.10:8000/api/v1` | **Required.** Baked into the bundle at build time; without it the build points at localhost and every request fails in a way that looks like the API is down |
+| `BCS_API_URL` | `http://203.0.113.10:9000/api/v1` | **Required.** Baked into the bundle at build time; without it the build points at localhost and every request fails in a way that looks like the API is down |
 | `WEB_ROOT` | `/var/www/bcs-app` | Where the static files land |
 | `BCS_TENANT_HOST_SUFFIX` | `bcs.example.org` | Optional, and only meaningful once associations have their own subdomains. Set it and `demo-one.bcs.example.org` resolves the association from the hostname, so testers never type a slug |
 

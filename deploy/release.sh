@@ -82,10 +82,28 @@ php artisan optimize
 ln -sfn "$RELEASE" "$CURRENT"
 
 # php-fpm caches the resolved path of the old symlink in opcache, so without
-# this it keeps serving the previous release from memory. Needs one sudoers
-# line - see deploy/README.md.
+# this it keeps serving the PREVIOUS release out of memory - a deploy that
+# reports success and changes nothing. Loud failure, therefore, rather than a
+# warning: a silently stale deploy is the thing this is here to prevent.
+#
+# The unit is DISCOVERED, not hard-coded to a PHP version. `php8.3-fpm` was
+# right on the stack this was written against and wrong on Ubuntu 26.04, whose
+# archive has no 8.3 at all. Override with FPM_SERVICE if the name is unusual.
 if command -v systemctl >/dev/null 2>&1; then
-    sudo systemctl reload php8.3-fpm
+    FPM_SERVICE="${FPM_SERVICE:-$(systemctl list-units --type=service --all --no-legend 'php*-fpm.service' 2>/dev/null | awk '{print $1}' | head -1)}"
+
+    if [ -z "$FPM_SERVICE" ]; then
+        echo "FATAL: no php*-fpm service found, so the new code would not be served."
+        echo "Set FPM_SERVICE to the unit name, or reload PHP yourself and rerun."
+        exit 1
+    fi
+
+    # Root over ssh needs no sudo, and sudo may not be configured for it.
+    if [ "$(id -u)" -eq 0 ]; then
+        systemctl reload "$FPM_SERVICE"
+    else
+        sudo systemctl reload "$FPM_SERVICE"
+    fi
 fi
 
 # Workers hold the old code in memory for the length of their process. This

@@ -18,9 +18,25 @@ pipeline, so it has to be right before the first deploy.
 
 ```bash
 sudo apt install -y nginx mysql-server redis-server \
-  php8.3-fpm php8.3-cli php8.3-mysql php8.3-bcmath php8.3-mbstring \
-  php8.3-intl php8.3-gd php8.3-zip php8.3-curl php8.3-xml php8.3-redis
+  php-fpm php-cli php-mysql php-bcmath php-mbstring \
+  php-intl php-gd php-zip php-curl php-xml php-redis
 ```
+
+**Unversioned on purpose.** `php8.3-*` exists on 24.04 and not on 26.04, whose
+archive has no 8.3 at all; the metapackages pull whatever that release's default
+PHP is. Check what you got, because two other things have to agree with it:
+
+```bash
+php -v
+```
+
+- **CI's `php-version`** in `.github/workflows/ci.yml` should be the same, or the
+  vendor tree is resolved and the suite is run against a PHP the server does not
+  have. `composer.json` requires `^8.3`, so 8.4 and 8.5 satisfy it — which means
+  a mismatch will not fail, it will simply go untested.
+- **The nginx socket path** below (`/run/php/phpX.Y-fpm.sock`).
+
+`release.sh` needs no telling: it finds the `php*-fpm` unit itself.
 
 Two of those are not optional, in different ways.
 
@@ -138,11 +154,15 @@ The release script reloads php-fpm, because opcache keeps serving the previous
 release out of memory otherwise:
 
 ```
-deploy ALL=(root) NOPASSWD: /usr/bin/systemctl reload php8.3-fpm
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl reload php8.4-fpm
 ```
 
+Use whatever unit `systemctl list-units 'php*-fpm.service'` reports — the version
+follows the PHP you installed above.
+
 That is the only privilege the deploy user needs. It is deliberately one exact
-command rather than `NOPASSWD: ALL`.
+command rather than `NOPASSWD: ALL`. If the deploy user is root, skip this
+entirely: `release.sh` reloads directly when it is already root.
 
 ### nginx
 
@@ -158,7 +178,8 @@ server {
     location / { try_files $uri $uri/ /index.php?$query_string; }
 
     location ~ \.php$ {
-        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+        # Match the PHP you installed: `ls /run/php/`.
+        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
         fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
         include fastcgi_params;
     }
@@ -195,6 +216,8 @@ User=deploy
 Restart=always
 WorkingDirectory=/var/www/bcs/current
 ExecStart=/usr/bin/php artisan queue:work --sleep=3 --tries=3 --max-time=3600
+# WorkingDirectory is the `current` SYMLINK, so a restarted worker picks up the
+# release that is live at that moment rather than the one live when it started.
 
 [Install]
 WantedBy=multi-user.target

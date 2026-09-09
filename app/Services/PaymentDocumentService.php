@@ -29,6 +29,13 @@ use Illuminate\Support\Str;
  */
 class PaymentDocumentService
 {
+    /**
+     * The disk a document recorded before ADR-0011 is on.
+     *
+     * Kept as a constant rather than deleted: every row written before uploads
+     * could go to S3 has no `disk` of its own, and "local" is the only correct
+     * answer for those. New rows carry whichever disk actually took them.
+     */
     public const DISK = 'local';
 
     /** Slips are photographed on phones; 8 MB is generous for that. */
@@ -54,6 +61,8 @@ class PaymentDocumentService
      * @param  array<UploadedFile>  $files
      * @return array<int, array<string, mixed>> the payment's full document list
      */
+    public function __construct(private readonly DocumentStorage $storage) {}
+
     public function attach(PaymentInfo $payment, array $files): array
     {
         $existing = $payment->documents ?? [];
@@ -67,17 +76,22 @@ class PaymentDocumentService
         foreach ($files as $file) {
             $this->guard($file);
 
-            // Random filename: the member's own filename is untrusted input and
-            // has no business becoming a path. The original is kept as data, for
-            // display only.
-            $stored = $file->storeAs(
+            /*
+             * Through DocumentStorage since ADR-0011: S3 when it is configured,
+             * local when that fails, and the disk it actually used comes back
+             * rather than being assumed. The random filename is unchanged and
+             * is still the point - the member's own filename is untrusted input
+             * and has no business becoming a path.
+             */
+            $stored = $this->storage->put(
+                $file,
                 $this->directory($payment),
-                Str::uuid()->toString().'.'.$this->extensionFor($file),
-                self::DISK,
+                $this->storage->filename($this->extensionFor($file)),
             );
 
             $existing[] = [
-                'path' => $stored,
+                'disk' => $stored['disk'],
+                'path' => $stored['path'],
                 'original_name' => $this->safeName($file->getClientOriginalName()),
                 'mime' => $file->getClientMimeType(),
                 'size' => $file->getSize(),
@@ -110,7 +124,7 @@ class PaymentDocumentService
     }
 
     /**
-     * @return array{path: string, name: string, mime: string}
+     * @return array{disk: string, path: string, name: string, mime: string}
      */
     public function locate(PaymentInfo $payment, int $index): array
     {
@@ -122,11 +136,16 @@ class PaymentDocumentService
 
         $doc = $documents[$index];
 
-        if (! Storage::disk(self::DISK)->exists($doc['path'])) {
+        // Rows written before ADR-0011 carry no disk, and local is where they
+        // are. Reading it off the record is what lets the two coexist.
+        $disk = $doc['disk'] ?? self::DISK;
+
+        if (! Storage::disk($disk)->exists($doc['path'])) {
             throw new \DomainException('That document is no longer stored.');
         }
 
         return [
+            'disk' => $disk,
             'path' => $doc['path'],
             'name' => $doc['original_name'] ?? 'document',
             'mime' => $doc['mime'] ?? 'application/octet-stream',

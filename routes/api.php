@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Http\Controllers\Api\V1\AuthController;
+use App\Http\Controllers\Api\V1\DocumentController;
 use App\Http\Controllers\Api\V1\DuesController;
 use App\Http\Controllers\Api\V1\GatewayController;
 use App\Http\Controllers\Api\V1\PayflexCallbackController;
@@ -118,6 +119,32 @@ Route::prefix('v1')->group(function () {
          */
         Route::get('/me/profile-updates', [ProfileController::class, 'index']);
         Route::post('/me/profile-updates', [ProfileController::class, 'store']);
+
+        /*
+         * A member's own identity documents (parity P-10).
+         *
+         * READ ONLY, and deliberately. Changing what the association identifies
+         * you by goes through the profile-update queue an officer decides on
+         * (FR-MEM-8) - and that queue does not carry files yet, so today staff
+         * file these at the counter. Listing them still matters: a member
+         * should be able to see what the office holds without asking.
+         */
+        Route::get('/me/documents', [DocumentController::class, 'meIndex']);
+        Route::get('/me/documents/{slot}', [DocumentController::class, 'meShow']);
+
+        /*
+         * Submitting one for review (FR-MEM-8).
+         *
+         * Gated on the same ability as any other change a member asks for,
+         * because that is what this is: nothing the association holds changes
+         * until an officer approves it. The reads above need no ability - they
+         * return the member's own record and nothing else - but a write does,
+         * and the route sweep is right to insist.
+         */
+        Route::post('/me/documents', [DocumentController::class, 'meSubmit'])
+            ->middleware('ability:member.profile.request-change');
+
+        Route::get('/me/documents/{slot}/pending', [DocumentController::class, 'mePendingShow']);
 
         // ---- member surface --------------------------------------------
         //
@@ -250,6 +277,57 @@ Route::prefix('v1')->group(function () {
                 ->middleware('permission:nominees.manage');
             Route::delete('/nominees/{nominee}', [NomineeController::class, 'destroy'])
                 ->middleware('permission:nominees.manage');
+
+            /*
+             * Identity documents (parity P-10): photograph, NID front and back,
+             * signature and the two proofs.
+             *
+             * Reading is `members.view`, writing is `members.edit`. The split
+             * matters more here than elsewhere: the photograph and the NID are
+             * how the association proves who somebody is, so an account that may
+             * read the register has no business replacing them.
+             *
+             * A member reaches their own through /me/documents above.
+             */
+            Route::get('/members/{member}/documents', [DocumentController::class, 'index'])
+                ->middleware('permission:members.view');
+            Route::post('/members/{member}/documents', [DocumentController::class, 'store'])
+                ->middleware('permission:members.edit');
+            Route::get('/members/{member}/documents/{slot}', [DocumentController::class, 'show'])
+                ->middleware('permission:members.view');
+            Route::delete('/members/{member}/documents/{slot}', [DocumentController::class, 'destroy'])
+                ->middleware('permission:members.edit');
+
+            /*
+             * A nominee's documents, on `nominees.manage` like everything else
+             * about nominees. The legacy carries applicant AND nominee NID
+             * images through its approval queue; this is the half of that which
+             * does not need the queue.
+             */
+            Route::get('/nominees/{nominee}/documents', [DocumentController::class, 'nomineeIndex'])
+                ->middleware('permission:nominees.manage');
+            Route::post('/nominees/{nominee}/documents', [DocumentController::class, 'nomineeStore'])
+                ->middleware('permission:nominees.manage');
+            Route::get('/nominees/{nominee}/documents/{slot}', [DocumentController::class, 'nomineeShow'])
+                ->middleware('permission:nominees.manage');
+            Route::delete('/nominees/{nominee}/documents/{slot}', [DocumentController::class, 'nomineeDestroy'])
+                ->middleware('permission:nominees.manage');
+
+            /*
+             * The document review queue (FR-MEM-8).
+             *
+             * On `profile-updates.decide`, the permission that already governs
+             * deciding what a member may change about themselves. A document is
+             * the same decision with a file attached, and inventing a second
+             * permission for it would mean an association could grant one and
+             * not the other without ever meaning to.
+             */
+            Route::get('/document-reviews', [DocumentController::class, 'reviewIndex'])
+                ->middleware('permission:profile-updates.decide');
+            Route::get('/document-reviews/{document}', [DocumentController::class, 'reviewShow'])
+                ->middleware('permission:profile-updates.decide');
+            Route::post('/document-reviews/{document}/decide', [DocumentController::class, 'reviewDecide'])
+                ->middleware('permission:profile-updates.decide');
 
             Route::post('/members/{member}/approve', [MemberController::class, 'approve'])
                 ->middleware('permission:members.approve');

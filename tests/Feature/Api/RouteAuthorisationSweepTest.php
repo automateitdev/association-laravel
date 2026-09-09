@@ -109,6 +109,34 @@ class RouteAuthorisationSweepTest extends TestCase
          */
         'GET api/v1/me/profile-updates',
         'POST api/v1/me/profile-updates',
+
+        /*
+         * A member's own identity documents (parity P-10). Both are READS, and
+         * an ability here would be checking that a member is themselves.
+         *
+         * What makes it safe is what is absent: there is no write. A member
+         * cannot upload, replace or delete their own documents - the controller
+         * refuses any caller that is not a Member, and then refuses a Member on
+         * every write path. Filing them is staff work behind `members.edit`,
+         * because the photograph and the NID are how the association proves who
+         * somebody is.
+         *
+         * If a member-facing upload is ever added - through the profile-update
+         * queue, which is where it belongs - it does NOT come here. It gets an
+         * ability of its own, and this entry stays limited to the two reads.
+         */
+        'GET api/v1/me/documents',
+        'GET api/v1/me/documents/{slot}',
+
+        /*
+         * And the member's own pending submission, so they can see what they
+         * sent while it waits. Still a read of their own record.
+         *
+         * The WRITE beside it - POST api/v1/me/documents - is not here and must
+         * not be: it carries `ability:member.profile.request-change`, because
+         * submitting a document is a member asking for a change like any other.
+         */
+        'GET api/v1/me/documents/{slot}/pending',
     ];
 
     /**

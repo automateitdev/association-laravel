@@ -85,7 +85,9 @@ class PaymentDocumentController extends Controller
             throw ApiException::notFound('Document');
         }
 
-        return Storage::disk(PaymentDocumentService::DISK)->response(
+        // The recorded disk, not a constant: since ADR-0011 a document may be
+        // on S3 or on local storage depending on which took it.
+        return Storage::disk($document['disk'])->response(
             $document['path'],
             $document['name'],
             [

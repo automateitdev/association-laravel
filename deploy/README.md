@@ -106,7 +106,7 @@ Set at minimum:
 ```dotenv
 APP_ENV=staging
 APP_DEBUG=false
-APP_URL=https://test.example.org
+APP_URL=https://admin.cocsol.com.bd
 
 DB_CONNECTION=mysql
 DB_DATABASE=bcs_central
@@ -166,11 +166,15 @@ entirely: `release.sh` reloads directly when it is already root.
 
 ### nginx
 
-Two vhosts, on ports rather than hostnames: `nginx/bcs-api.conf` serves the API
-and console on **:9000**, `nginx/bcs-app.conf` serves the app on **:9001**.
-Ports because telling two vhosts apart by `server_name` needs DNS pointed here,
-and ports need nothing — this works on a bare IP today and moves to names and
-TLS later without the deploy changing at all.
+Two vhosts: `nginx/bcs-api.conf` serves the API and console on **:9000**,
+`nginx/bcs-app.conf` serves the app on **:9001**. Both bind `127.0.0.1` and the
+docker bridge gateway (`172.18.0.1` on this host) and nothing else — Caddy
+reaches them, the internet does not.
+
+nginx rather than Caddy for this half, even though Caddy is already here: it is
+in a container, so serving the PHP from it would mean bind-mounting the release
+directory and the php-fpm socket into a stack that is running somebody else's
+application. nginx is on the host, next to both.
 
 9000 is php-fpm's own default TCP port. Debian and Ubuntu ship a unix socket
 instead, so it is normally free — but check before reloading, because a clash
@@ -191,18 +195,63 @@ ls /run/php/
 nginx -t && systemctl reload nginx
 ```
 
-If a firewall is on: `ufw allow 9000/tcp && ufw allow 9001/tcp`.
+Neither port faces the internet: the vhosts bind `127.0.0.1` and the docker
+bridge gateway only. There is nothing to open at any firewall, and no plaintext
+route around the TLS below.
 
-Everything else has to agree with the ports:
+### Caddy in front, for TLS
+
+This box already runs a Caddy container (`src-edge-1`) holding 80 and 443 for
+another application, so BCS goes behind it rather than beside it.
+`caddy/association.caddyfile` has the two blocks to append to that Caddyfile, which on
+this host is bind-mounted from `/opt/ufms/src/backend/docker/edge/Caddyfile`:
+
+```bash
+cat /var/www/bcs/current/deploy/caddy/association.caddyfile >> /opt/ufms/src/backend/docker/edge/Caddyfile
+docker exec src-edge-1 caddy reload --config /etc/caddy/Caddyfile
+```
+
+**`reload` is graceful** — no container recreate, no dropped connection, and an
+invalid config is refused while the running one keeps serving. Nothing about the
+other application changes: no compose edit, no new published ports.
+
+It also cannot steal that application's traffic. Its Caddyfile ends in a
+catch-all `https://` block with on-demand TLS, and Caddy routes by the **most
+specific host match, not file order** — so two named blocks claim two hostnames
+and every other name keeps falling through exactly as before.
+
+| Hostname | Serves | Behind |
+|---|---|---|
+| `admin.cocsol.com.bd` | the API and the platform console | nginx :9000 |
+| `new.cocsol.com.bd` | the app in a browser | nginx :9001 |
+
+Both need an **A record pointing at this box before the reload**. Caddy orders
+certificates at reload for a named site, and Let's Encrypt allows five *failed*
+validations per hostname per hour — so a name that does not resolve yet costs
+you an hour, not a retry.
+
+Everything else has to agree with the hostnames:
 
 | Where | Setting | Value |
 |---|---|---|
-| `shared/.env` | `APP_URL` | `http://<host>:9000` |
-| bcs-app-rn variables | `BCS_API_URL` | `http://<host>:9000/api/v1` |
+| `shared/.env` | `APP_URL` | `https://admin.cocsol.com.bd` |
+| bcs-app-rn variables | `BCS_API_URL` | `https://admin.cocsol.com.bd/api/v1` |
 | bcs-app-rn variables | `WEB_ROOT` | `/var/www/bcs-app` |
 
 `BCS_API_URL` is compiled into the bundle, so changing it means re-running the
 app workflow — there is no runtime override.
+
+### The app must be told TLS ended at the proxy
+
+`bootstrap/app.php` trusts private-range proxies, and it has to. Behind a proxy
+that terminates HTTPS, PHP sees a plain HTTP request: `url()` and `route()` emit
+`http://`, and a **signed URL is signed over the http form while the browser
+requests the https one**, so the signature never matches and every member's
+document download 403s (NFR-SEC-4).
+
+Trusted by subnet rather than `*`, because `*` means believing `X-Forwarded-For`
+from whoever connects, and this is a shared host. `TRUSTED_PROXIES` in `.env`
+overrides the list for a deployment whose proxy sits somewhere else.
 
 ### Upload sizes, in three places
 
@@ -289,7 +338,7 @@ Repository **variables** (Settings → Variables), both optional:
 | Variable | Default | What |
 |---|---|---|
 | `DEPLOY_PATH` | `/var/www/bcs` | the deploy root |
-| `HEALTH_URL` | — | e.g. `https://test.example.org/api/v1/health`. Set it and the deploy fails when the site does not answer afterwards |
+| `HEALTH_URL` | — | e.g. `https://admin.cocsol.com.bd/api/v1/health`. Set it and the deploy fails when the site does not answer afterwards |
 
 ---
 
@@ -335,14 +384,14 @@ the data back.
 
 `bcs-app-rn` has its own workflow (`.github/workflows/deploy-web.yml`) that
 exports the Expo app as static files and uploads them to the **:9001** vhost
-above. It uses the **same four SSH secrets** — put them in that repository's
+behind `new.cocsol.com.bd`. It uses the **same four SSH secrets** — put them in that repository's
 `test` environment too — plus:
 
 | Variable | Example | What |
 |---|---|---|
-| `BCS_API_URL` | `http://203.0.113.10:9000/api/v1` | **Required.** Baked into the bundle at build time; without it the build points at localhost and every request fails in a way that looks like the API is down |
+| `BCS_API_URL` | `https://admin.cocsol.com.bd/api/v1` | **Required.** Baked into the bundle at build time; without it the build points at localhost and every request fails in a way that looks like the API is down |
 | `WEB_ROOT` | `/var/www/bcs-app` | Where the static files land |
-| `BCS_TENANT_HOST_SUFFIX` | `bcs.example.org` | Optional, and only meaningful once associations have their own subdomains. Set it and `demo-one.bcs.example.org` resolves the association from the hostname, so testers never type a slug |
+| `BCS_TENANT_HOST_SUFFIX` | `cocsol.com.bd` | **Leave unset for now.** It only means something once each association has its own name — `demo-one.cocsol.com.bd` — which needs a wildcard DNS record and a wildcard site in Caddy. Unset, members pick their association on the launch screen, which is the supported path rather than a fallback |
 
 Two things about this pipeline that differ from the API's:
 

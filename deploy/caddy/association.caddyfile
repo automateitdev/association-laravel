@@ -1,0 +1,74 @@
+###############################################################################
+# BCS behind an existing Caddy.
+#
+# Append these two blocks to the Caddyfile that is already serving this host,
+# then reload IN PLACE:
+#
+#     docker exec src-edge-1 caddy reload --config /etc/caddy/Caddyfile
+#
+# `reload` is graceful: no container recreate, no dropped connection, and an
+# invalid config is refused while the running one keeps serving. Nothing about
+# the existing stack changes - no compose edit, no new published ports.
+#
+# WHY THIS DOES NOT DISTURB THE CATCH-ALL
+#
+#   That Caddyfile ends with `https:// { tls { on_demand } ... }`, which matches
+#   any SNI that no named site claims, and hands it to UFMS with issuance gated
+#   by the `ask` endpoint. Caddy routes by the MOST SPECIFIC host match, not by
+#   file order, so a named block takes these two hostnames and leaves every
+#   other name falling through to the catch-all exactly as before.
+#
+#   It also means these two get their certificates the ordinary way, at reload,
+#   rather than through the on-demand gate - which is correct, because they have
+#   no row in UFMS's `domains` table and the ask would answer 403 for them.
+#
+# WHY THE UPSTREAM IS AN IP AND NOT A CONTAINER NAME
+#
+#   BCS runs on the HOST under nginx, not in this compose project, so there is
+#   no service name to reach it by. 172.18.0.1 is the gateway of the network
+#   src-edge-1 is attached to - that is how a container reaches the host here.
+#   Confirm with:
+#
+#     docker network inspect <network> --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}'
+#
+#   nginx binds exactly 127.0.0.1 and that gateway address (deploy/nginx/*.conf),
+#   so 9000 and 9001 are reachable from Caddy and from the box, and from nowhere
+#   else. There is nothing to open at the provider firewall.
+###############################################################################
+
+# -----------------------------------------------------------------------------
+# The Laravel side: the API at /api/v1 and the platform console at /platform.
+#
+# ONE HOSTNAME FOR BOTH, because they are one application. The console is the
+# operator surface (provisioning, gateway credentials, break-glass) and the API
+# is what the phone and the browser app call; splitting them would mean two
+# certificates and two vhosts for one codebase.
+# -----------------------------------------------------------------------------
+admin.cocsol.com.bd {
+        reverse_proxy 172.18.0.1:9000 {
+                # Reports and exports are real work. Caddy's default write
+                # timeout would cut a large export off mid-download, and a
+                # truncated CSV arrives looking like a complete one.
+                transport http {
+                        read_timeout 300s
+                        write_timeout 300s
+                }
+        }
+}
+
+# -----------------------------------------------------------------------------
+# The app in a browser: static files from `expo export --platform web`.
+#
+# No timeouts worth setting - nothing here is generated, it is all files on
+# disk. The API it talks to is the block above, by absolute URL compiled into
+# the bundle at build time (BCS_API_URL), not by a path on this host.
+#
+# ONE NAME, SO THE APP ASKS WHICH ASSOCIATION. Host-based discovery needs a
+# name per association (demo-one.cocsol.com.bd) and therefore a wildcard record
+# and a wildcard site here; until that exists BCS_TENANT_HOST_SUFFIX stays
+# unset and members pick their association on the launch screen, which is the
+# supported path rather than a fallback.
+# -----------------------------------------------------------------------------
+new.cocsol.com.bd {
+        reverse_proxy 172.18.0.1:9001
+}

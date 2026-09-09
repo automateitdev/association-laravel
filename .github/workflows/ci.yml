@@ -68,7 +68,12 @@ jobs:
       - name: PHP 8.3
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.3'
+          # MATCHES THE SERVER, which is Ubuntu 26.04 and therefore PHP 8.5.
+          # composer.json requires ^8.3, so 8.4 and 8.5 satisfy it too - which
+          # means a mismatch here would not fail, it would just mean the suite
+          # never runs on the version the code actually runs on.
+          php-version: '8.5'
+
           # bcmath is not optional: every money figure the server computes goes
           # through it, because floats do not reconcile (FR-MON-4).
           extensions: bcmath, pdo_mysql, mbstring, intl, gd, zip
@@ -129,7 +134,7 @@ jobs:
       - name: PHP 8.3
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.3'
+          php-version: '8.5'
           extensions: bcmath, pdo_mysql, mbstring, intl, gd, zip
           coverage: none
 

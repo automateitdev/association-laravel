@@ -28,6 +28,7 @@ class ShareTransfer extends Model
         'fee_setup_id',
         'shares',
         'amount',
+        'note',
         'transferred_on',
         'created_by',
     ];

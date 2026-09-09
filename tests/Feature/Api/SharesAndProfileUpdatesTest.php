@@ -147,20 +147,304 @@ class SharesAndProfileUpdatesTest extends TenantTestCase
 
         $this->postJson('/api/v1/staff/shares/transfers', [
             'seller_id' => $seller->id,
-            'buyer_id' => $buyer->id,
-            'fee_setup_id' => $setup->id,
-            'shares' => 4,
-            'amount' => 4000,
+            'transfers' => [[
+                'buyer_id' => $buyer->id,
+                'fee_setup_id' => $setup->id,
+                'shares' => 4,
+            ]],
         ], $this->headers($token))
             ->assertCreated()
             ->assertJsonPath('data.seller_balance', 6)
-            ->assertJsonPath('data.buyer_balance', 4);
+            ->assertJsonPath('data.transfers.0.buyer_balance', 4);
 
         // Both stores in step: the per-head balance and the running total staff
         // actually read.
         $this->inTenant(function () use ($seller, $buyer) {
             $this->assertSame(6, (int) $seller->associatorInfo()->value('num_or_shares'));
             $this->assertSame(4, (int) $buyer->associatorInfo()->value('num_or_shares'));
+        });
+    }
+
+    /**
+     * The note survives, because it is printed rather than filed.
+     *
+     * It appears in the Instalment Transfers Sent and Received tables on a
+     * member's statement - the one line explaining why instalments they paid
+     * for now belong to somebody else. The rewrite dropped the column and left
+     * that question unanswerable.
+     */
+    public function test_a_transfer_keeps_the_note_it_was_given(): void
+    {
+        $token = $this->staffToken();
+        [$seller, $buyer, $setup] = $this->twoMembersWithShares(10);
+
+        $this->postJson('/api/v1/staff/shares/transfers', [
+            'seller_id' => $seller->id,
+            'transfers' => [[
+                'buyer_id' => $buyer->id,
+                'fee_setup_id' => $setup->id,
+                'shares' => 2,
+            ]],
+            'note' => 'Inherited on the death of the holder.',
+        ], $this->headers($token))
+            ->assertCreated()
+            ->assertJsonPath('data.note', 'Inherited on the death of the holder.');
+
+        $this->withHeaders($this->headers($token))
+            ->getJson('/api/v1/staff/shares/transfers')
+            ->assertOk()
+            ->assertJsonPath('data.0.note', 'Inherited on the death of the holder.');
+    }
+
+    /**
+     * Sent and received are opposite readings of one row.
+     *
+     * A member's own history has to say which way each transfer went, and the
+     * row cannot say it on its own - it depends entirely on whose page it is
+     * being read on.
+     */
+    public function test_a_members_transfer_history_says_which_way_each_one_went(): void
+    {
+        $token = $this->staffToken();
+        [$seller, $buyer, $setup] = $this->twoMembersWithShares(10);
+
+        $this->postJson('/api/v1/staff/shares/transfers', [
+            'seller_id' => $seller->id,
+            'transfers' => [[
+                'buyer_id' => $buyer->id,
+                'fee_setup_id' => $setup->id,
+                'shares' => 2,
+            ]],
+        ], $this->headers($token))->assertCreated();
+
+        $this->withHeaders($this->headers($token))
+            ->getJson("/api/v1/staff/shares/transfers?member_id={$seller->id}")
+            ->assertOk()
+            ->assertJsonPath('data.0.direction', 'sent');
+
+        $this->withHeaders($this->headers($token))
+            ->getJson("/api/v1/staff/shares/transfers?member_id={$buyer->id}")
+            ->assertOk()
+            ->assertJsonPath('data.0.direction', 'received');
+
+        // Unfiltered, the question has no answer and the field says so rather
+        // than picking a side.
+        $this->withHeaders($this->headers($token))
+            ->getJson('/api/v1/staff/shares/transfers')
+            ->assertOk()
+            ->assertJsonPath('data.0.direction', null);
+    }
+
+    /** A seller holding `$shares` of one head, and two people to split it between. */
+    private function sellerAndTwoBuyers(int $shares = 10): array
+    {
+        return $this->inTenant(function () use ($shares) {
+            $this->seedSettings();
+            $setup = $this->makeFeeSetup(['is_share' => true, 'amount' => '1000.00']);
+
+            $seller = $this->makeMember();
+            $seller->associatorInfo()->create(['membership_no' => '601', 'num_or_shares' => $shares]);
+
+            $first = $this->makeMember();
+            $first->associatorInfo()->create(['membership_no' => '602', 'num_or_shares' => 0]);
+
+            $second = $this->makeMember();
+            $second->associatorInfo()->create(['membership_no' => '603', 'num_or_shares' => 0]);
+
+            MemberShareBalance::create([
+                'member_id' => $seller->id,
+                'fee_setup_id' => $setup->id,
+                'shares' => $shares,
+            ]);
+
+            return [$seller, $first, $second, $setup];
+        });
+    }
+
+    /**
+     * One seller, several buyers, one document - the shape of the legacy screen
+     * and of the act it records.
+     *
+     * A member disposing of a holding usually splits it between several people
+     * on one day for one reason. Recorded as separate transfers, that decision
+     * becomes three unrelated events that only look connected because their
+     * dates match.
+     */
+    public function test_one_document_can_split_a_holding_between_several_buyers(): void
+    {
+        $token = $this->staffToken();
+        [$seller, $first, $second, $setup] = $this->sellerAndTwoBuyers(10);
+
+        $this->postJson('/api/v1/staff/shares/transfers', [
+            'seller_id' => $seller->id,
+            'note' => 'Split between the two sons.',
+            'transfers' => [
+                ['buyer_id' => $first->id, 'fee_setup_id' => $setup->id, 'shares' => 3],
+                ['buyer_id' => $second->id, 'fee_setup_id' => $setup->id, 'shares' => 2],
+            ],
+        ], $this->headers($token))
+            ->assertCreated()
+            ->assertJsonCount(2, 'data.transfers')
+            ->assertJsonPath('data.shares', 5)
+            ->assertJsonPath('data.amount', '5000.00')
+            ->assertJsonPath('data.seller_balance', 5)
+            ->assertJsonPath('data.transfers.0.buyer_balance', 3)
+            ->assertJsonPath('data.transfers.1.buyer_balance', 2);
+
+        // One reason, carried onto every row of the document: there was one
+        // decision behind it.
+        $this->withHeaders($this->headers($token))
+            ->getJson('/api/v1/staff/shares/transfers')
+            ->assertOk()
+            ->assertJsonPath('data.0.note', 'Split between the two sons.')
+            ->assertJsonPath('data.1.note', 'Split between the two sons.');
+    }
+
+    /**
+     * The holding limits the DOCUMENT, not each row of it.
+     *
+     * Six to one buyer and six to another out of a holding of ten is the same
+     * overdraft as one row of twelve. Checked row by row, both rows pass.
+     */
+    public function test_rows_cannot_overdraw_the_holding_between_them(): void
+    {
+        $token = $this->staffToken();
+        [$seller, $first, $second, $setup] = $this->sellerAndTwoBuyers(10);
+
+        $this->postJson('/api/v1/staff/shares/transfers', [
+            'seller_id' => $seller->id,
+            'transfers' => [
+                ['buyer_id' => $first->id, 'fee_setup_id' => $setup->id, 'shares' => 6],
+                ['buyer_id' => $second->id, 'fee_setup_id' => $setup->id, 'shares' => 6],
+            ],
+        ], $this->headers($token))
+            ->assertStatus(422)
+            ->assertJsonPath('error.code', 'SHARE_TRANSFER_REFUSED');
+
+        // Nothing half-applied: the first row must not have happened either.
+        $this->inTenant(function () use ($seller, $first) {
+            $this->assertSame(10, (int) $seller->associatorInfo()->value('num_or_shares'));
+            $this->assertSame(0, (int) $first->associatorInfo()->value('num_or_shares'));
+            $this->assertSame(0, \App\Models\Tenant\ShareTransfer::count());
+        });
+    }
+
+    /**
+     * The same buyer twice for the same head is two rows that should be one.
+     *
+     * Whichever is read second looks like a correction of the first, and the
+     * member's statement shows two entries for one event.
+     */
+    public function test_the_same_buyer_cannot_appear_twice_for_one_fee_head(): void
+    {
+        $token = $this->staffToken();
+        [$seller, $buyer, , $setup] = $this->sellerAndTwoBuyers(10);
+
+        $this->postJson('/api/v1/staff/shares/transfers', [
+            'seller_id' => $seller->id,
+            'transfers' => [
+                ['buyer_id' => $buyer->id, 'fee_setup_id' => $setup->id, 'shares' => 2],
+                ['buyer_id' => $buyer->id, 'fee_setup_id' => $setup->id, 'shares' => 3],
+            ],
+        ], $this->headers($token))
+            ->assertStatus(422)
+            ->assertJsonPath('error.code', 'SHARE_TRANSFER_REFUSED');
+    }
+
+    /**
+     * The amount is the association's arithmetic, not the officer's.
+     *
+     * It is the value of the instalments that moved, and it reaches the
+     * member's statement and the paid report - so a figure sent by the client
+     * is ignored outright rather than trusted and recorded.
+     */
+    public function test_the_amount_is_computed_from_the_fee_head_not_from_the_request(): void
+    {
+        $token = $this->staffToken();
+        [$seller, $buyer, , $setup] = $this->sellerAndTwoBuyers(10);
+
+        $this->postJson('/api/v1/staff/shares/transfers', [
+            'seller_id' => $seller->id,
+            'transfers' => [
+                // A price somebody made up, sent alongside the real request.
+                ['buyer_id' => $buyer->id, 'fee_setup_id' => $setup->id, 'shares' => 3, 'amount' => 999999],
+            ],
+        ], $this->headers($token))
+            ->assertCreated()
+            // 3 instalments of a 1000.00 head.
+            ->assertJsonPath('data.transfers.0.amount', '3000.00')
+            ->assertJsonPath('data.amount', '3000.00');
+    }
+
+    /**
+     * A DRIFTED TOTAL MUST NOT BREAK THE TRANSFER - it must be corrected by it.
+     *
+     * `associators_infos.num_or_shares` is UNSIGNED and used to be decremented
+     * directly. Where it had fallen out of step with the balances - which is
+     * exactly what D-19 did to the legacy data, and the reason this column is
+     * watched at all - the subtraction went below zero and MySQL answered
+     * `SQLSTATE[22003] value is out of range`. A raw 500, on the one path most
+     * likely to meet corrupted data, refusing a transfer for a reason no
+     * officer could act on.
+     *
+     * The seller here holds 10 by the balances and 0 by the denormalised
+     * total: the worst case, where every possible subtraction underflows.
+     */
+    public function test_a_transfer_survives_and_repairs_a_drifted_share_total(): void
+    {
+        $token = $this->staffToken();
+        [$seller, $buyer, $setup] = $this->twoMembersWithShares(10);
+
+        // The drift, written straight to the column the way bad data arrives.
+        $this->inTenant(fn () => $seller->associatorInfo()->update(['num_or_shares' => 0]));
+
+        $this->postJson('/api/v1/staff/shares/transfers', [
+            'seller_id' => $seller->id,
+            'transfers' => [[
+                'buyer_id' => $buyer->id,
+                'fee_setup_id' => $setup->id,
+                'shares' => 4,
+            ]],
+        ], $this->headers($token))->assertCreated();
+
+        $this->inTenant(function () use ($seller, $buyer) {
+            // Rebuilt from the balances rather than nudged from a wrong number:
+            // 10 held less the 4 that moved.
+            $this->assertSame(6, (int) $seller->associatorInfo()->value('num_or_shares'));
+            $this->assertSame(4, (int) $buyer->associatorInfo()->value('num_or_shares'));
+        });
+    }
+
+    /**
+     * The total has to have somewhere to live, or the two stores drift apart by
+     * exactly the amount transferred - silently, which is D-19 written fresh.
+     *
+     * Refused before anything is applied, and the refusal names the member
+     * rather than reporting that a row was not found.
+     */
+    public function test_a_transfer_is_refused_when_a_party_has_no_society_record(): void
+    {
+        $token = $this->staffToken();
+        [$seller, , $setup] = $this->twoMembersWithShares(10);
+
+        $stranger = $this->inTenant(fn () => $this->makeMember(['name' => 'Nurul Absent']));
+
+        $this->postJson('/api/v1/staff/shares/transfers', [
+            'seller_id' => $seller->id,
+            'transfers' => [[
+                'buyer_id' => $stranger->id,
+                'fee_setup_id' => $setup->id,
+                'shares' => 2,
+            ]],
+        ], $this->headers($token))
+            ->assertStatus(422)
+            ->assertJsonPath('error.code', 'SHARE_TRANSFER_REFUSED')
+            ->assertJsonPath('error.message', fn (string $m) => str_contains($m, 'Nurul Absent'));
+
+        // Nothing moved: the seller still holds all ten.
+        $this->inTenant(function () use ($seller) {
+            $this->assertSame(10, (int) $seller->associatorInfo()->value('num_or_shares'));
+            $this->assertSame(0, \App\Models\Tenant\ShareTransfer::count());
         });
     }
 
@@ -171,9 +455,11 @@ class SharesAndProfileUpdatesTest extends TenantTestCase
 
         $this->postJson('/api/v1/staff/shares/transfers', [
             'seller_id' => $seller->id,
-            'buyer_id' => $buyer->id,
-            'fee_setup_id' => $setup->id,
-            'shares' => 5,
+            'transfers' => [[
+                'buyer_id' => $buyer->id,
+                'fee_setup_id' => $setup->id,
+                'shares' => 5,
+            ]],
         ], $this->headers($token))
             ->assertStatus(422)
             ->assertJsonPath('error.code', 'SHARE_TRANSFER_REFUSED');
@@ -193,9 +479,11 @@ class SharesAndProfileUpdatesTest extends TenantTestCase
 
         $this->postJson('/api/v1/staff/shares/transfers', [
             'seller_id' => $seller->id,
-            'buyer_id' => $seller->id,
-            'fee_setup_id' => $setup->id,
-            'shares' => 1,
+            'transfers' => [[
+                'buyer_id' => $seller->id,
+                'fee_setup_id' => $setup->id,
+                'shares' => 1,
+            ]],
         ], $this->headers($token))
             ->assertStatus(422);
     }
@@ -208,9 +496,11 @@ class SharesAndProfileUpdatesTest extends TenantTestCase
         foreach ([0, -3] as $shares) {
             $this->postJson('/api/v1/staff/shares/transfers', [
                 'seller_id' => $seller->id,
-                'buyer_id' => $buyer->id,
-                'fee_setup_id' => $setup->id,
-                'shares' => $shares,
+                'transfers' => [[
+                    'buyer_id' => $buyer->id,
+                    'fee_setup_id' => $setup->id,
+                    'shares' => $shares,
+                ]],
             ], $this->headers($token))->assertStatus(422);
         }
     }
@@ -226,16 +516,21 @@ class SharesAndProfileUpdatesTest extends TenantTestCase
 
         $this->postJson('/api/v1/staff/shares/transfers', [
             'seller_id' => $seller->id,
-            'buyer_id' => $buyer->id,
-            'fee_setup_id' => $setup->id,
-            'shares' => 2,
-            'amount' => 2500,
+            'transfers' => [[
+                'buyer_id' => $buyer->id,
+                'fee_setup_id' => $setup->id,
+                'shares' => 2,
+            ]],
         ], $this->headers($token))->assertCreated();
 
         $this->getJson('/api/v1/staff/shares/transfers', $this->headers($token))
             ->assertOk()
             ->assertJsonPath('data.0.shares', 2)
-            ->assertJsonPath('data.0.amount', '2500.00')
+            // 2 instalments of a 1000.00 head. The amount is the value of what
+            // moved, computed from the fee head - it is not a figure anybody
+            // typed, because it reaches the member's statement and the paid
+            // report and has to mean the same thing on every row.
+            ->assertJsonPath('data.0.amount', '2000.00')
             ->assertJsonPath('data.0.seller_name', $seller->name);
 
         $this->inTenant(fn () => $this->assertDatabaseHas('audit_logs', ['action' => 'shares.transferred']));
@@ -263,9 +558,11 @@ class SharesAndProfileUpdatesTest extends TenantTestCase
 
         $this->postJson('/api/v1/staff/shares/transfers', [
             'seller_id' => $seller->id,
-            'buyer_id' => $buyer->id,
-            'fee_setup_id' => $setup->id,
-            'shares' => 1,
+            'transfers' => [[
+                'buyer_id' => $buyer->id,
+                'fee_setup_id' => $setup->id,
+                'shares' => 1,
+            ]],
         ], $this->headers($token))->assertForbidden();
     }
 

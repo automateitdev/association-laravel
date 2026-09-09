@@ -7,6 +7,7 @@ namespace Tests\Feature\Api;
 use App\Models\Tenant\FeeAssign;
 use App\Models\Tenant\AssociatorInfo;
 use App\Models\Tenant\Member;
+use App\Models\Tenant\MemberShareBalance;
 use App\Models\Tenant\PaymentInfo;
 use App\Models\User;
 use App\Services\FeeAssignService;
@@ -659,6 +660,116 @@ class StaffApiTest extends TenantTestCase
             // FR-REP-8: column totals for every summable column.
             ->assertJsonPath('meta.instalments_paid_amount', '1000.00')
             ->assertJsonPath('meta.fines_paid_amount', '200.00');
+    }
+
+    /**
+     * Instalments that ARRIVED BY TRANSFER are reported, and reported apart.
+     *
+     * The legacy report folds them into the member's paid total, which states
+     * that somebody paid money the association never received. Both halves of
+     * this matter and they pull in opposite directions: leaving transfers out
+     * entirely loses the fact that a member is holding instalments at all
+     * (which is what the rewrite did until now), and adding them in overstates
+     * collections. So: reported, in their own column, never inside total_paid.
+     *
+     * The buyer here has no payments of their own, which is the case a report
+     * built from payment rows cannot see without being asked to.
+     */
+    public function test_the_paid_report_reports_transferred_instalments_outside_the_paid_total(): void
+    {
+        $token = $this->staffToken();
+
+        [$seller, $buyer, $setup] = $this->inTenant(function () {
+            $this->seedSettings();
+            $setup = $this->makeFeeSetup(['is_share' => true, 'amount' => '1000.00']);
+
+            $seller = $this->makeMember(['name' => 'Aaa Seller']);
+            $seller->associatorInfo()->create(['membership_no' => '801', 'num_or_shares' => 5]);
+
+            $buyer = $this->makeMember(['name' => 'Bbb Buyer']);
+            $buyer->associatorInfo()->create(['membership_no' => '802', 'num_or_shares' => 0]);
+
+            MemberShareBalance::create([
+                'member_id' => $seller->id,
+                'fee_setup_id' => $setup->id,
+                'shares' => 5,
+            ]);
+
+            return [$seller, $buyer, $setup];
+        });
+
+        $this->postJson('/api/v1/staff/shares/transfers', [
+            'seller_id' => $seller->id,
+            'transfers' => [[
+                'buyer_id' => $buyer->id,
+                'fee_setup_id' => $setup->id,
+                'shares' => 3,
+            ]],
+            'transferred_on' => '2026-03-15',
+        ], $this->headers($token))->assertCreated();
+
+        $this->withHeaders($this->headers($token))
+            ->getJson('/api/v1/staff/reports/memberwise-paid')
+            ->assertOk()
+            // The buyer is the only member on the report: the seller neither
+            // paid nor received anything.
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.member_name', 'Bbb Buyer')
+            ->assertJsonPath('data.0.transfers_in_count', 3)
+            ->assertJsonPath('data.0.transfers_in_amount', '3000.00')
+
+            // Not one paisa of it reaches the paid figures.
+            ->assertJsonPath('data.0.instalments_paid_amount', '0.00')
+            ->assertJsonPath('data.0.total_paid', '0.00')
+            ->assertJsonPath('meta.transfers_in_amount', '3000.00')
+            ->assertJsonPath('meta.total_paid', '0.00');
+    }
+
+    /**
+     * The date range applies to transfers as well.
+     *
+     * The legacy column ignores it, so a report for March shows a transfer made
+     * in some other year beside figures that do not include it. Two questions
+     * answered on one row, with nothing saying which is which.
+     */
+    public function test_a_transfer_outside_the_range_is_left_out_of_the_paid_report(): void
+    {
+        $token = $this->staffToken();
+
+        [$seller, $buyer, $setup] = $this->inTenant(function () {
+            $this->seedSettings();
+            $setup = $this->makeFeeSetup(['is_share' => true, 'amount' => '1000.00']);
+
+            $seller = $this->makeMember(['name' => 'Ccc Seller']);
+            $seller->associatorInfo()->create(['membership_no' => '803', 'num_or_shares' => 5]);
+
+            $buyer = $this->makeMember(['name' => 'Ddd Buyer']);
+            $buyer->associatorInfo()->create(['membership_no' => '804', 'num_or_shares' => 0]);
+
+            MemberShareBalance::create([
+                'member_id' => $seller->id,
+                'fee_setup_id' => $setup->id,
+                'shares' => 5,
+            ]);
+
+            return [$seller, $buyer, $setup];
+        });
+
+        $this->postJson('/api/v1/staff/shares/transfers', [
+            'seller_id' => $seller->id,
+            'transfers' => [[
+                'buyer_id' => $buyer->id,
+                'fee_setup_id' => $setup->id,
+                'shares' => 2,
+            ]],
+            'transferred_on' => '2026-03-15',
+        ], $this->headers($token))->assertCreated();
+
+        $this->withHeaders($this->headers($token))
+            ->getJson('/api/v1/staff/reports/memberwise-paid?from=2026-05-01&to=2026-05-31')
+            ->assertOk()
+            ->assertJsonCount(0, 'data')
+            ->assertJsonPath('meta.transfers_in_amount', '0.00');
     }
 
     public function test_the_due_report_separates_instalments_from_fines(): void

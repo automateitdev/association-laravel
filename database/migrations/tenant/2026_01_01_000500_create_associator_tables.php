@@ -31,9 +31,15 @@ return new class extends Migration
             $table->date('join_date')->nullable();
             $table->string('share_no', 50)->nullable();
 
-            // Denormalised running total, maintained by ShareService alongside
-            // member_share_balances. Recomputable from share history - see the
-            // shares:recalculate command (FR-SHR-6).
+            // Denormalised running total, SUMMARISING member_share_balances.
+            //
+            // ShareService rewrites it from those balances on every write
+            // rather than adding to and subtracting from it: UNSIGNED plus a
+            // drifted value meant a legitimate transfer died on
+            // `SQLSTATE[22003] value is out of range` instead of correcting
+            // the drift. Members it never touches are not repaired, which is
+            // what the bulk shares:recalculate command of FR-SHR-6 is for -
+            // that command does NOT exist yet.
             $table->unsignedInteger('num_or_shares')->default(0);
 
             $table->string('bcs_batch')->nullable();

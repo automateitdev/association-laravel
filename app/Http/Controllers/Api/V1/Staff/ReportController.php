@@ -174,18 +174,67 @@ class ReportController extends Controller
             ->orderBy('m.name')
             ->get();
 
+        /*
+         * INSTALMENTS RECEIVED BY TRANSFER, kept apart from everything above.
+         *
+         * The legacy report adds these into the member's paid total
+         * (Paid_Cummulative = cumulative_paid + cumulative_transferred), so a
+         * member is shown as having paid money the association never received.
+         * That is a defensible thing to tell a member about their own standing
+         * and an indefensible thing to call collections, and one column cannot
+         * be both. Here it is its own figure: total_paid stays money that came
+         * in, and what arrived by transfer sits beside it rather than blended
+         * into it.
+         *
+         * Its own query rather than a join, because a member can receive a
+         * transfer in a period they paid nothing in - and joining would either
+         * lose them or multiply the payment rows by the transfer rows.
+         *
+         * The date range applies here too. The legacy deliberately ignored it
+         * for this column, which produces a row where one figure answers the
+         * chosen period and its neighbour answers all of history - they do not
+         * add up and nothing on the page says why.
+         */
+        $transfers = DB::table('share_transfers as st')
+            ->join('members as m', 'm.id', '=', 'st.buyer_id')
+            ->leftJoin('associators_infos as info', 'info.member_id', '=', 'm.id')
+            ->when($filters['from'], fn ($q, $d) => $q->whereDate('st.transferred_on', '>=', $d))
+            ->when($filters['to'], fn ($q, $d) => $q->whereDate('st.transferred_on', '<=', $d))
+            ->tap(fn ($q) => $this->whereMemberMatches($q, $filters['q']))
+            ->groupBy('m.id', 'm.name', 'info.membership_no')
+            ->select([
+                'm.id as member_id',
+                'm.name as member_name',
+                'info.membership_no',
+
+                // Shares and instalments are the same unit here: one share of a
+                // share-type fee head IS one instalment paid into it.
+                DB::raw('COALESCE(SUM(st.shares), 0) as transfers_in_count'),
+                DB::raw('COALESCE(SUM(st.amount), 0) as transfers_in_amount'),
+            ])
+            ->get()
+            ->keyBy('member_id');
+
         $instalmentTotal = '0.00';
         $fineTotal = '0.00';
         $countTotal = 0;
+        $transferTotal = '0.00';
+        $transferCountTotal = 0;
         $out = [];
 
         foreach ($rows as $row) {
             $instalments = $this->money($row->instalments_paid_amount);
             $fines = $this->money($row->fines_paid_amount);
 
+            $received = $transfers->get($row->member_id);
+            $transferAmount = $this->money($received->transfers_in_amount ?? 0);
+            $transferCount = (int) ($received->transfers_in_count ?? 0);
+
             $instalmentTotal = bcadd($instalmentTotal, $instalments, 2);
             $fineTotal = bcadd($fineTotal, $fines, 2);
             $countTotal += (int) $row->instalments_paid_count;
+            $transferTotal = bcadd($transferTotal, $transferAmount, 2);
+            $transferCountTotal += $transferCount;
 
             $out[] = [
                 'member_id' => (int) $row->member_id,
@@ -195,8 +244,44 @@ class ReportController extends Controller
                 'instalments_paid_amount' => $instalments,
                 'fines_paid_amount' => $fines,
                 'total_paid' => bcadd($instalments, $fines, 2),
+                'transfers_in_count' => $transferCount,
+                'transfers_in_amount' => $transferAmount,
+            ];
+
+            $transfers->forget($row->member_id);
+        }
+
+        /*
+         * Whoever is left received a transfer and paid nothing themselves in
+         * this period. They belong on a memberwise report: a member holding
+         * instalments somebody handed them is the exact case this column exists
+         * to make visible, and dropping them would hide it where it matters
+         * most. The payments query cannot reach them - it starts from payment
+         * rows they do not have.
+         */
+        foreach ($transfers as $received) {
+            $transferAmount = $this->money($received->transfers_in_amount);
+            $transferCount = (int) $received->transfers_in_count;
+
+            $transferTotal = bcadd($transferTotal, $transferAmount, 2);
+            $transferCountTotal += $transferCount;
+
+            $out[] = [
+                'member_id' => (int) $received->member_id,
+                'membership_no' => $received->membership_no ?? '',
+                'member_name' => $received->member_name,
+                'instalments_paid_count' => 0,
+                'instalments_paid_amount' => '0.00',
+                'fines_paid_amount' => '0.00',
+                'total_paid' => '0.00',
+                'transfers_in_count' => $transferCount,
+                'transfers_in_amount' => $transferAmount,
             ];
         }
+
+        // Re-sorted because the rows appended above arrived out of order: the
+        // SQL ordering only covered the members who had paid something.
+        usort($out, fn (array $a, array $b) => strcasecmp($a['member_name'], $b['member_name']));
 
         return [
             'rows' => $out,
@@ -206,6 +291,8 @@ class ReportController extends Controller
                 'instalments_paid_amount' => $instalmentTotal,
                 'fines_paid_amount' => $fineTotal,
                 'total_paid' => bcadd($instalmentTotal, $fineTotal, 2),
+                'transfers_in_count' => $transferCountTotal,
+                'transfers_in_amount' => $transferTotal,
             ],
         ];
     }
@@ -323,6 +410,12 @@ class ReportController extends Controller
             new Column('instalments_paid_amount', 'Instalments', Column::TYPE_MONEY, (string) $totals['instalments_paid_amount']),
             new Column('fines_paid_amount', 'Fines', Column::TYPE_MONEY, (string) $totals['fines_paid_amount']),
             new Column('total_paid', 'Total paid', Column::TYPE_MONEY, (string) $totals['total_paid']),
+
+            // After the total, deliberately. These instalments were not paid to
+            // the association by this member, and a column placed before the
+            // total reads as one of its parts.
+            new Column('transfers_in_count', 'Instalments received', Column::TYPE_INTEGER, (string) $totals['transfers_in_count']),
+            new Column('transfers_in_amount', 'Received by transfer', Column::TYPE_MONEY, (string) $totals['transfers_in_amount']),
         ];
     }
 

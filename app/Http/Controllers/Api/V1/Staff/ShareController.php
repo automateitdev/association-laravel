@@ -51,13 +51,24 @@ class ShareController extends Controller
         ]);
     }
 
-    /** Every transfer, newest first - the history balances do not keep. */
+    /**
+     * Every transfer, newest first - the history balances do not keep.
+     *
+     * Filtered to one member, each row also says WHICH WAY it went for that
+     * member. Sent and received are opposite facts about the same row, and a
+     * screen showing a member their transfers cannot work them out from the
+     * ids without knowing whose page it is on.
+     */
     public function index(Request $request): JsonResponse
     {
+        $memberId = $request->query('member_id') === null
+            ? null
+            : (int) $request->query('member_id');
+
         $transfers = ShareTransfer::query()
             ->with(['seller:id,name', 'buyer:id,name', 'feeSetup:id,fee_head'])
             ->when(
-                $request->query('member_id'),
+                $memberId,
                 fn ($q, $id) => $q->where(fn ($w) => $w->where('seller_id', $id)->orWhere('buyer_id', $id))
             )
             ->latest('transferred_on')
@@ -74,7 +85,13 @@ class ShareController extends Controller
                 'fee_head' => $t->feeSetup?->fee_head,
                 'shares' => $t->shares,
                 'amount' => (string) $t->amount,
+                'note' => $t->note,
                 'transferred_on' => $t->transferred_on?->toDateString(),
+
+                // Null when the listing is not about anybody in particular.
+                'direction' => $memberId === null
+                    ? null
+                    : ($t->buyer_id === $memberId ? 'received' : 'sent'),
             ]),
             'meta' => [
                 'current_page' => $transfers->currentPage(),
@@ -85,72 +102,112 @@ class ShareController extends Controller
         ]);
     }
 
+    /**
+     * Record one transfer document: one seller, one date, one reason, many buyers.
+     *
+     * The batch is the unit because the act is. A member splitting their
+     * holding between three people does it once, for one reason, on one day -
+     * and if the third row is refused, the first two must not have happened
+     * either. Sending three separate requests cannot promise that.
+     */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'seller_id' => ['required', 'integer', 'exists:members,id'],
-            'buyer_id' => ['required', 'integer', 'exists:members,id', 'different:seller_id'],
-            'fee_setup_id' => ['required', 'integer', 'exists:fee_setups,id'],
-            'shares' => ['required', 'integer', 'min:1'],
-
-            // Optional and defaulted to zero: shares are sometimes gifted or
-            // moved between family members, and forcing a price would invent one.
-            'amount' => ['sometimes', 'numeric', 'min:0'],
             'transferred_on' => ['sometimes', 'date'],
+
+            // Printed on both members' statements, not filed away internally -
+            // it is the sentence explaining why instalments they paid for now
+            // belong to somebody else. One reason for the whole document,
+            // because there was one decision behind it.
+            'note' => ['sometimes', 'nullable', 'string', 'max:255'],
+
+            'transfers' => ['required', 'array', 'min:1'],
+            'transfers.*.buyer_id' => ['required', 'integer', 'exists:members,id', 'different:seller_id'],
+            'transfers.*.fee_setup_id' => ['required', 'integer', 'exists:fee_setups,id'],
+            'transfers.*.shares' => ['required', 'integer', 'min:1'],
         ], [
-            'buyer_id.different' => 'A member cannot transfer shares to themselves.',
+            'transfers.*.buyer_id.different' => 'A member cannot transfer instalments to themselves.',
         ]);
 
+        /*
+         * NO `amount` IN THE REQUEST, deliberately.
+         *
+         * It is the value of the instalments that moved, computed from the fee
+         * head - the same figure the legacy screen shows as a read-only
+         * "Amount (auto)". It reaches the member's statement and the paid
+         * report, so it cannot mean whatever the officer typed that afternoon.
+         */
         try {
-            $transfer = $this->shares->transfer(
+            $created = $this->shares->transferMany(
                 sellerId: $validated['seller_id'],
-                buyerId: $validated['buyer_id'],
-                feeSetupId: $validated['fee_setup_id'],
-                shares: $validated['shares'],
-                amount: number_format((float) ($validated['amount'] ?? 0), 2, '.', ''),
+                rows: array_map(fn (array $row) => [
+                    'buyer_id' => (int) $row['buyer_id'],
+                    'fee_setup_id' => (int) $row['fee_setup_id'],
+                    'shares' => (int) $row['shares'],
+                ], $validated['transfers']),
+                note: $validated['note'] ?? null,
                 transferredOn: $validated['transferred_on'] ?? null,
                 createdBy: $request->user()->id,
             );
         } catch (DomainException $e) {
-            // The service's refusals are the domain rules - not enough shares,
-            // a transfer to oneself - and they belong in front of the user
-            // rather than as a 500.
+            // The service's refusals are the domain rules - not enough held, a
+            // transfer to oneself, the same buyer twice - and they belong in
+            // front of the user rather than as a 500.
             throw new ApiException('SHARE_TRANSFER_REFUSED', $e->getMessage(), 422);
         }
 
         /*
-         * Audited in the association's own log as well as recorded as a
-         * transfer. The transfer row says what moved; the audit entry says who
-         * on the staff made it happen, which the transfer row cannot - a member
-         * did not do this, an officer did.
+         * Audited as one act, listing every row. The transfer rows say what
+         * moved; the audit entry says who on the staff made it happen, which
+         * they cannot - a member did not do this, an officer did.
          */
         AuditLog::create([
             'actor_type' => $request->user()::class,
             'actor_id' => $request->user()->id,
             'subject_type' => ShareTransfer::class,
-            'subject_id' => $transfer->id,
+            'subject_id' => $created[0]->id,
             'action' => 'shares.transferred',
             'after' => [
-                'seller_id' => $transfer->seller_id,
-                'buyer_id' => $transfer->buyer_id,
-                'shares' => $transfer->shares,
+                'seller_id' => $validated['seller_id'],
+                'transfers' => array_map(fn (ShareTransfer $t) => [
+                    'id' => $t->id,
+                    'buyer_id' => $t->buyer_id,
+                    'fee_setup_id' => $t->fee_setup_id,
+                    'shares' => $t->shares,
+                    'amount' => (string) $t->amount,
+                ], $created),
             ],
             'ip' => $request->ip(),
         ]);
 
+        $total = '0.00';
+
+        foreach ($created as $transfer) {
+            $total = bcadd($total, (string) $transfer->amount, 2);
+        }
+
         return response()->json([
             'data' => [
-                'id' => $transfer->id,
-                'seller_id' => $transfer->seller_id,
-                'buyer_id' => $transfer->buyer_id,
-                'shares' => $transfer->shares,
-                'amount' => (string) $transfer->amount,
-                'transferred_on' => $transfer->transferred_on->toDateString(),
+                'seller_id' => $validated['seller_id'],
+                'transferred_on' => $created[0]->transferred_on->toDateString(),
+                'note' => $created[0]->note,
 
-                // The new positions, so the screen does not have to re-fetch to
-                // show what just happened.
-                'seller_balance' => $this->shares->balanceFor($transfer->seller_id),
-                'buyer_balance' => $this->shares->balanceFor($transfer->buyer_id),
+                'transfers' => array_map(fn (ShareTransfer $t) => [
+                    'id' => $t->id,
+                    'buyer_id' => $t->buyer_id,
+                    'fee_setup_id' => $t->fee_setup_id,
+                    'shares' => $t->shares,
+                    'amount' => (string) $t->amount,
+
+                    // The buyer's new position, so the screen does not have to
+                    // re-fetch to show what just happened.
+                    'buyer_balance' => $this->shares->balanceFor($t->buyer_id),
+                ], $created),
+
+                'shares' => array_sum(array_map(fn (ShareTransfer $t) => $t->shares, $created)),
+                'amount' => $total,
+                'seller_balance' => $this->shares->balanceFor($validated['seller_id']),
             ],
         ], 201);
     }

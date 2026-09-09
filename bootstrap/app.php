@@ -26,6 +26,33 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        /*
+         * TLS ENDS AT THE REVERSE PROXY, so the app has to be told or every URL
+         * it builds is wrong.
+         *
+         * Behind a proxy that terminates HTTPS, PHP sees a plain HTTP request.
+         * Without this, `request()->isSecure()` is false, `url()` and `route()`
+         * emit http://, and - the part that actually breaks rather than merely
+         * looks wrong - a SIGNED URL is signed over the http form while the
+         * browser requests the https one, so the signature does not match and
+         * every member's document download 403s (NFR-SEC-4).
+         *
+         * Trusted by SUBNET, not '*'. Trusting any proxy means believing
+         * X-Forwarded-For from whoever connects, which is a client's own header
+         * until something in front strips it - and this app is deployed beside
+         * other things on shared hosts. Private ranges are what the proxy can
+         * actually be: a container on a docker bridge, or 127.0.0.1.
+         *
+         * TRUSTED_PROXIES overrides it for a deployment whose proxy sits
+         * somewhere else entirely.
+         */
+        $middleware->trustProxies(
+            at: array_map(
+                trim(...),
+                explode(',', (string) env('TRUSTED_PROXIES', '127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16')),
+            ),
+        );
+
         // Sanctum's ability middleware, used to keep a member token out of a
         // staff endpoint even if routing were mis-configured (FR-AUTH-4).
         $middleware->alias([

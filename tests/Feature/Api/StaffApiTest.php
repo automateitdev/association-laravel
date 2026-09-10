@@ -729,8 +729,13 @@ class StaffApiTest extends TenantTestCase
             ->assertOk()
             ->assertJsonPath("data.{$member->id}.total", 2)
             ->assertJsonPath("data.{$member->id}.heads.0.count", 2)
-            ->assertJsonPath("data.{$member->id}.heads.0.from", '2026-01')
-            ->assertJsonPath("data.{$member->id}.heads.0.to", '2026-02')
+            /*
+             * The periods themselves, oldest first. A count says "they have
+             * some"; the months say WHICH, and instalments have gaps - January
+             * and March is not January to March, and a count or a range
+             * reports the two identically.
+             */
+            ->assertJsonPath("data.{$member->id}.heads.0.periods", ['2026-01', '2026-02'])
             // Null, not zero: nothing was proposed, so there is nothing to
             // duplicate - a different statement from "duplicates none of it".
             ->assertJsonPath("data.{$member->id}.matching", null);

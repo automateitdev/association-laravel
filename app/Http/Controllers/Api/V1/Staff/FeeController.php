@@ -271,13 +271,28 @@ class FeeController extends Controller
          * are different amounts of help, and the second costs nothing extra
          * from a query already grouping.
          */
+        /*
+         * THE PERIODS THEMSELVES, not just how many.
+         *
+         * A count answers "have they got some of this" and nothing else. The
+         * legacy column names every month - "October 1 2024, November 1 2024,
+         * December 1 2024" - and the naming is the point: instalments have
+         * gaps. A member holding January, March and July is not the same as
+         * one holding January to March, and a count or a date range reports
+         * them identically.
+         *
+         * GROUP_CONCAT rather than a second query per member: one row per
+         * member and fee head, with the periods along for the ride. Bounded to
+         * 8kb, which is a thousand periods - eighty years of monthly dues -
+         * and MySQL truncates rather than failing past it.
+         */
         $held = FeeAssign::query()
             ->join('fee_setups', 'fee_setups.id', '=', 'fee_assigns.fee_setup_id')
             ->whereIn('fee_assigns.member_id', $memberIds)
             ->groupBy('fee_assigns.member_id', 'fee_setups.id', 'fee_setups.fee_head')
             ->selectRaw(
                 'fee_assigns.member_id, fee_setups.fee_head, COUNT(*) as held, '
-                .'MIN(fee_assigns.period) as first_period, MAX(fee_assigns.period) as last_period'
+                .'GROUP_CONCAT(fee_assigns.period ORDER BY fee_assigns.period) as periods'
             )
             ->orderByDesc('held')
             ->get()
@@ -311,8 +326,9 @@ class FeeController extends Controller
                 'heads' => $rows === null ? [] : $rows->map(fn ($r) => [
                     'fee_head' => $r->fee_head,
                     'count' => (int) $r->held,
-                    'from' => $r->first_period,
-                    'to' => $r->last_period,
+
+                    // Oldest first, so a list reads the way a ledger does.
+                    'periods' => array_values(array_filter(explode(',', (string) $r->periods))),
                 ])->values()->all(),
 
                 // Null when nothing was proposed - which is not the same as

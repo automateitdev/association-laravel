@@ -372,6 +372,34 @@ class FeeController extends Controller
             );
         }
 
+        /*
+         * A ONE-OFF IS ONE.
+         *
+         * `monthly` says whether a head recurs: a subscription does, an
+         * admission fee does not. Nothing here read it, so the assign screen
+         * offered months and years for both and the server wrote a row per
+         * period - twelve admission fees against one member, each of them
+         * valid as far as the unique index is concerned, because that index is
+         * per period and the periods genuinely differ.
+         *
+         * The legacy system branches on the same flag and is worth quoting on
+         * it: in its monthly arm `month_id` is `required` and it loops member x
+         * year x month; in the other arm `month_id` and `years` are `nullable`
+         * and it ignores them, writing exactly one row per member. The rule is
+         * older than this rewrite and was simply not carried over.
+         *
+         * Refused here rather than left to the screen. A form can be made to
+         * show one month at a time, but this endpoint is what actually decides
+         * what a member owes, and it has to hold whether or not the request
+         * came from that form.
+         */
+        if (! $setup->monthly && count($validated['periods']) > 1) {
+            throw ApiException::conflict(
+                'FEE_HEAD_NOT_MONTHLY',
+                'That fee head is charged once, so it can be assigned to one month only.'
+            );
+        }
+
         $summary = $this->assigner->bulkAssign(
             $validated['member_ids'],
             $setup,

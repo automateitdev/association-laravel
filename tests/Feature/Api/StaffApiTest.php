@@ -401,6 +401,56 @@ class StaffApiTest extends TenantTestCase
         $this->inTenant(fn () => $this->assertSame(4, FeeAssign::count()));
     }
 
+    /**
+     * A one-off fee head is charged ONCE.
+     *
+     * `monthly` says whether a head recurs, and nothing read it: the assign
+     * screen offered months and years for every head and this endpoint wrote a
+     * row per period, so an admission fee could be raised twelve times against
+     * one member. The unique index does not catch it - it is per period, and
+     * the periods genuinely differ.
+     *
+     * The legacy controller branches on the same flag: months are `required`
+     * in its monthly arm and `nullable` and ignored in the other, which writes
+     * exactly one row per member.
+     *
+     * Asserted over HTTP rather than in the service, because the form is not
+     * the thing that has to hold - this endpoint is.
+     */
+    public function test_a_one_off_fee_head_takes_one_period_only(): void
+    {
+        $token = $this->staffToken();
+
+        [$memberId, $feeSetupId] = $this->inTenant(function () {
+            $setup = $this->makeFeeSetup(['fee_head' => 'Admission Fee', 'monthly' => false]);
+
+            return [$this->makeMember()->id, $setup->id];
+        });
+
+        $this->withHeaders($this->headers($token))
+            ->postJson('/api/v1/staff/fee-assigns', [
+                'fee_setup_id' => $feeSetupId,
+                'member_ids' => [$memberId],
+                'periods' => ['2026-01', '2026-02'],
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('error.code', 'FEE_HEAD_NOT_MONTHLY');
+
+        $this->inTenant(fn () => $this->assertSame(0, FeeAssign::count()));
+
+        // One period is the whole of what it allows, and it still works.
+        $this->withHeaders($this->headers($token))
+            ->postJson('/api/v1/staff/fee-assigns', [
+                'fee_setup_id' => $feeSetupId,
+                'member_ids' => [$memberId],
+                'periods' => ['2026-01'],
+            ])
+            ->assertStatus(201)
+            ->assertJsonPath('data.created', 1);
+
+        $this->inTenant(fn () => $this->assertSame(1, FeeAssign::count()));
+    }
+
     // ---- payment approval ------------------------------------------------
 
     /**

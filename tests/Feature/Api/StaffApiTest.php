@@ -655,8 +655,12 @@ class StaffApiTest extends TenantTestCase
         $this->withHeaders($this->headers($token))
             ->getJson("/api/v1/staff/fee-assigns/coverage?fee_setup_id={$setup->id}&member_ids={$ids}&periods=2026-01,2026-02,2026-03")
             ->assertOk()
-            ->assertJsonPath("data.{$covered->id}", 3)
-            ->assertJsonPath("data.{$partial->id}", 1)
+            ->assertJsonPath("data.{$covered->id}.matching", 3)
+            ->assertJsonPath("data.{$partial->id}.matching", 1)
+            // And what they hold overall, which is shown whether or not
+            // anything has been proposed.
+            ->assertJsonPath("data.{$covered->id}.total", 3)
+            ->assertJsonPath("data.{$covered->id}.heads.0.count", 3)
             // Absent rather than zero: a member with none sends nothing across
             // the wire, and the client reads absence as none.
             ->assertJsonMissingPath("data.{$untouched->id}")
@@ -687,7 +691,49 @@ class StaffApiTest extends TenantTestCase
         $this->withHeaders($this->headers($token))
             ->getJson("/api/v1/staff/fee-assigns/coverage?fee_setup_id={$setup->id}&member_ids={$member->id}&periods=2027-01,2027-02")
             ->assertOk()
-            ->assertJsonMissingPath("data.{$member->id}");
+            // Nothing of 2027 is assigned...
+            ->assertJsonPath("data.{$member->id}.matching", 0)
+            // ...but the member still holds their January, and the column
+            // says so. That is the legacy's behaviour and the reason this
+            // endpoint answers without being asked a fee head.
+            ->assertJsonPath("data.{$member->id}.total", 1);
+    }
+
+    /**
+     * WHAT A MEMBER HOLDS IS SHOWN WITHOUT BEING ASKED, which is how the
+     * legacy screen behaves and how this endpoint first did not.
+     *
+     * Its Assign Fees column prints every fee head and date before anything is
+     * chosen, because it is a fact about the member rather than about the
+     * form. Requiring a fee head made the column vanish until somebody filled
+     * the form in - exactly when they were looking for it.
+     */
+    public function test_coverage_reports_holdings_with_no_fee_head_chosen(): void
+    {
+        $token = $this->staffToken();
+
+        [$member] = $this->inTenant(function () {
+            $this->seedSettings();
+            $setup = $this->makeFeeSetup();
+            $member = $this->makeMember();
+
+            foreach (['2026-01', '2026-02'] as $period) {
+                app(FeeAssignService::class)->assign($member->id, $setup, $period);
+            }
+
+            return [$member];
+        });
+
+        $this->withHeaders($this->headers($token))
+            ->getJson("/api/v1/staff/fee-assigns/coverage?member_ids={$member->id}")
+            ->assertOk()
+            ->assertJsonPath("data.{$member->id}.total", 2)
+            ->assertJsonPath("data.{$member->id}.heads.0.count", 2)
+            ->assertJsonPath("data.{$member->id}.heads.0.from", '2026-01')
+            ->assertJsonPath("data.{$member->id}.heads.0.to", '2026-02')
+            // Null, not zero: nothing was proposed, so there is nothing to
+            // duplicate - a different statement from "duplicates none of it".
+            ->assertJsonPath("data.{$member->id}.matching", null);
     }
 
     // ---- reports ---------------------------------------------------------

@@ -225,31 +225,30 @@ class FeeController extends Controller
      * 200 were created".
      */
     /**
-     * Of these members and these periods, how many are already assigned.
+     * What these members already hold, and how much of a proposal duplicates it.
      *
-     * WHY THIS EXISTS. The legacy fee-assign screen lists, against every
-     * member, each fee head they hold and every date it was assigned on. That
-     * is the question somebody is actually asking while ticking names: have
-     * these people already got this?
+     * WHY IT ANSWERS WITHOUT BEING ASKED A FEE HEAD. The legacy fee-assign
+     * screen prints, against every member, each fee head they hold and every
+     * date it was assigned on - before anything is chosen, because it is a
+     * fact about the member rather than about the form. The first version of
+     * this endpoint required a fee head and periods, so the column vanished
+     * until somebody filled the form in, which is precisely when they were
+     * looking for it.
      *
-     * The rewrite showed nothing, so the only way to find out was to assign
-     * and read the "skipped" count afterwards. Assigning twice is safe - the
-     * unique index refuses it - but "safe" is not the same as "visible", and
-     * an officer cannot tell a member they are covered by pressing a button
-     * and hoping.
+     * So both questions, in one round trip for a page of members:
      *
-     * A COUNT PER MEMBER, not the list of dates the legacy prints. With the
-     * periods already chosen on the screen, "9 of 12" answers it in a line
-     * where twelve dates would need a paragraph and a table row four deep.
+     *   heads    - everything they hold, grouped by fee head, always.
+     *   matching - how many of the chosen periods of the chosen head they
+     *              already have, when a head and periods were given.
      *
-     * One grouped query, so a page of members costs one round trip.
+     * TWO GROUPED QUERIES AT MOST, whatever the size of the page.
      */
     public function assignCoverage(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'fee_setup_id' => ['required', 'integer', 'exists:fee_setups,id'],
             'member_ids' => ['required', 'string'],
-            'periods' => ['required', 'string'],
+            'fee_setup_id' => ['sometimes', 'nullable', 'integer', 'exists:fee_setups,id'],
+            'periods' => ['sometimes', 'nullable', 'string'],
         ]);
 
         $memberIds = array_slice(array_filter(array_map(
@@ -257,29 +256,75 @@ class FeeController extends Controller
             explode(',', $validated['member_ids'])
         )), 0, 200);
 
-        $periods = array_slice(array_filter(array_map(
-            'trim',
-            explode(',', $validated['periods'])
-        )), 0, 120);
-
-        if ($memberIds === [] || $periods === []) {
-            return response()->json(['data' => (object) []]);
+        if ($memberIds === []) {
+            return response()->json(['data' => (object) [], 'meta' => ['periods' => 0]]);
         }
 
-        $counts = FeeAssign::query()
-            ->where('fee_setup_id', $validated['fee_setup_id'])
-            ->whereIn('member_id', $memberIds)
-            ->whereIn('period', $periods)
-            ->groupBy('member_id')
-            ->selectRaw('member_id, COUNT(*) as assigned')
-            ->pluck('assigned', 'member_id');
+        $periods = array_slice(array_filter(array_map(
+            'trim',
+            explode(',', (string) ($validated['periods'] ?? ''))
+        )), 0, 120);
 
         /*
-         * Only the members who have some. Absent means none, which the client
-         * can read without every zero being sent across the wire.
+         * Everything they hold, by fee head. The period range is carried
+         * because "15 instalments" and "15 instalments, 2024-10 to 2026-01"
+         * are different amounts of help, and the second costs nothing extra
+         * from a query already grouping.
          */
+        $held = FeeAssign::query()
+            ->join('fee_setups', 'fee_setups.id', '=', 'fee_assigns.fee_setup_id')
+            ->whereIn('fee_assigns.member_id', $memberIds)
+            ->groupBy('fee_assigns.member_id', 'fee_setups.id', 'fee_setups.fee_head')
+            ->selectRaw(
+                'fee_assigns.member_id, fee_setups.fee_head, COUNT(*) as held, '
+                .'MIN(fee_assigns.period) as first_period, MAX(fee_assigns.period) as last_period'
+            )
+            ->orderByDesc('held')
+            ->get()
+            ->groupBy('member_id');
+
+        $matching = collect();
+
+        if ($periods !== [] && ! empty($validated['fee_setup_id'])) {
+            $matching = FeeAssign::query()
+                ->where('fee_setup_id', $validated['fee_setup_id'])
+                ->whereIn('member_id', $memberIds)
+                ->whereIn('period', $periods)
+                ->groupBy('member_id')
+                ->selectRaw('member_id, COUNT(*) as matched')
+                ->pluck('matched', 'member_id');
+        }
+
+        $data = [];
+
+        foreach ($memberIds as $id) {
+            $rows = $held->get($id);
+
+            // A member holding nothing is omitted entirely, so a page of
+            // members with nothing costs an empty object.
+            if ($rows === null && ! $matching->has($id)) {
+                continue;
+            }
+
+            $data[(string) $id] = [
+                'total' => (int) ($rows?->sum('held') ?? 0),
+                'heads' => $rows === null ? [] : $rows->map(fn ($r) => [
+                    'fee_head' => $r->fee_head,
+                    'count' => (int) $r->held,
+                    'from' => $r->first_period,
+                    'to' => $r->last_period,
+                ])->values()->all(),
+
+                // Null when nothing was proposed - which is not the same as
+                // zero, and the column says different things for each.
+                'matching' => $periods === [] || empty($validated['fee_setup_id'])
+                    ? null
+                    : (int) ($matching[$id] ?? 0),
+            ];
+        }
+
         return response()->json([
-            'data' => (object) $counts->map(fn ($n) => (int) $n)->all(),
+            'data' => (object) $data,
             'meta' => ['periods' => count($periods)],
         ]);
     }

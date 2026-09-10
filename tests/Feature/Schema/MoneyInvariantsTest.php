@@ -41,8 +41,7 @@ class MoneyInvariantsTest extends TestCase
     {
         parent::setUp();
 
-        $slug = $this->slugFor(self::SLUG);
-        $this->artisan('tenant:provision', ['slug' => $slug])->assertSuccessful();
+        $slug = $this->provisionFreshTenant(self::SLUG);
         $this->tenant = Tenant::find($slug);
 
         [$this->memberId, $this->feeSetupId] = $this->tenant->run(function () {

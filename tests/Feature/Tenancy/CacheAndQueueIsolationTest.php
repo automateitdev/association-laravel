@@ -61,7 +61,7 @@ class CacheAndQueueIsolationTest extends TestCase
         parent::setUp();
 
         foreach ([self::ALPHA, self::BETA] as $base) {
-            $this->artisan('tenant:provision', ['slug' => $this->slugFor($base)])->assertSuccessful();
+            $this->provisionFreshTenant($base);
         }
 
         $this->alpha = Tenant::find($this->slugFor(self::ALPHA));

@@ -42,8 +42,7 @@ class FineAccrualIsolationTest extends TestCase
         parent::setUp();
 
         foreach ([self::HEALTHY, self::BROKEN] as $base) {
-            $slug = $this->slugFor($base);
-            $this->artisan('tenant:provision', ['slug' => $slug])->assertSuccessful();
+            $slug = $this->provisionFreshTenant($base);
 
             Tenant::find($slug)->run(function () {
                 app(TenantSeedService::class)->seedAll();

@@ -620,6 +620,76 @@ class StaffApiTest extends TenantTestCase
             ->assertJsonPath('data.payments_pending_approval', 1);
     }
 
+    /**
+     * What a proposed assignment would DUPLICATE, before it is made.
+     *
+     * The legacy fee-assign screen lists every fee head a member holds and
+     * every date it was assigned on, so an officer ticking names can see who
+     * is already covered. The rewrite showed nothing: the only way to find out
+     * was to assign and read the skipped count afterwards. Assigning twice is
+     * safe - the unique index refuses it - but safe is not visible.
+     */
+    public function test_coverage_reports_how_many_periods_each_member_already_has(): void
+    {
+        $token = $this->staffToken();
+
+        [$covered, $partial, $untouched, $setup] = $this->inTenant(function () {
+            $this->seedSettings();
+            $setup = $this->makeFeeSetup();
+
+            $covered = $this->makeMember();
+            $partial = $this->makeMember();
+            $untouched = $this->makeMember();
+
+            foreach (['2026-01', '2026-02', '2026-03'] as $period) {
+                app(FeeAssignService::class)->assign($covered->id, $setup, $period);
+            }
+
+            app(FeeAssignService::class)->assign($partial->id, $setup, '2026-01');
+
+            return [$covered, $partial, $untouched, $setup];
+        });
+
+        $ids = implode(',', [$covered->id, $partial->id, $untouched->id]);
+
+        $this->withHeaders($this->headers($token))
+            ->getJson("/api/v1/staff/fee-assigns/coverage?fee_setup_id={$setup->id}&member_ids={$ids}&periods=2026-01,2026-02,2026-03")
+            ->assertOk()
+            ->assertJsonPath("data.{$covered->id}", 3)
+            ->assertJsonPath("data.{$partial->id}", 1)
+            // Absent rather than zero: a member with none sends nothing across
+            // the wire, and the client reads absence as none.
+            ->assertJsonMissingPath("data.{$untouched->id}")
+            ->assertJsonPath('meta.periods', 3);
+    }
+
+    /**
+     * Counted against the periods ASKED FOR, not everything the member holds.
+     *
+     * A member assigned every month of 2026 is not "already covered" for a
+     * question about 2027, and a coverage figure that ignored the periods
+     * would say they were.
+     */
+    public function test_coverage_counts_only_the_periods_asked_about(): void
+    {
+        $token = $this->staffToken();
+
+        [$member, $setup] = $this->inTenant(function () {
+            $this->seedSettings();
+            $setup = $this->makeFeeSetup();
+            $member = $this->makeMember();
+
+            app(FeeAssignService::class)->assign($member->id, $setup, '2026-01');
+
+            return [$member, $setup];
+        });
+
+        $this->withHeaders($this->headers($token))
+            ->getJson("/api/v1/staff/fee-assigns/coverage?fee_setup_id={$setup->id}&member_ids={$member->id}&periods=2027-01,2027-02")
+            ->assertOk()
+            ->assertJsonMissingPath("data.{$member->id}");
+    }
+
     // ---- reports ---------------------------------------------------------
 
     /**

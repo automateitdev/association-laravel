@@ -224,6 +224,66 @@ class FeeController extends Controller
      * of 200 were skipped as already assigned; silence about it reads as "all
      * 200 were created".
      */
+    /**
+     * Of these members and these periods, how many are already assigned.
+     *
+     * WHY THIS EXISTS. The legacy fee-assign screen lists, against every
+     * member, each fee head they hold and every date it was assigned on. That
+     * is the question somebody is actually asking while ticking names: have
+     * these people already got this?
+     *
+     * The rewrite showed nothing, so the only way to find out was to assign
+     * and read the "skipped" count afterwards. Assigning twice is safe - the
+     * unique index refuses it - but "safe" is not the same as "visible", and
+     * an officer cannot tell a member they are covered by pressing a button
+     * and hoping.
+     *
+     * A COUNT PER MEMBER, not the list of dates the legacy prints. With the
+     * periods already chosen on the screen, "9 of 12" answers it in a line
+     * where twelve dates would need a paragraph and a table row four deep.
+     *
+     * One grouped query, so a page of members costs one round trip.
+     */
+    public function assignCoverage(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'fee_setup_id' => ['required', 'integer', 'exists:fee_setups,id'],
+            'member_ids' => ['required', 'string'],
+            'periods' => ['required', 'string'],
+        ]);
+
+        $memberIds = array_slice(array_filter(array_map(
+            'intval',
+            explode(',', $validated['member_ids'])
+        )), 0, 200);
+
+        $periods = array_slice(array_filter(array_map(
+            'trim',
+            explode(',', $validated['periods'])
+        )), 0, 120);
+
+        if ($memberIds === [] || $periods === []) {
+            return response()->json(['data' => (object) []]);
+        }
+
+        $counts = FeeAssign::query()
+            ->where('fee_setup_id', $validated['fee_setup_id'])
+            ->whereIn('member_id', $memberIds)
+            ->whereIn('period', $periods)
+            ->groupBy('member_id')
+            ->selectRaw('member_id, COUNT(*) as assigned')
+            ->pluck('assigned', 'member_id');
+
+        /*
+         * Only the members who have some. Absent means none, which the client
+         * can read without every zero being sent across the wire.
+         */
+        return response()->json([
+            'data' => (object) $counts->map(fn ($n) => (int) $n)->all(),
+            'meta' => ['periods' => count($periods)],
+        ]);
+    }
+
     public function storeAssigns(Request $request): JsonResponse
     {
         $validated = $request->validate([

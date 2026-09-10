@@ -369,6 +369,17 @@ Route::prefix('v1')->group(function () {
 
             Route::get('/fee-assigns', [FeeController::class, 'indexAssigns'])
                 ->middleware('permission:fee-assigns.view');
+
+            /*
+             * How much of a proposed assignment already exists.
+             *
+             * Its own route rather than a filter on the listing above, because
+             * the question is not "show me assignments" - it is "of these
+             * members and these periods, which are already done". The listing
+             * pages at 25 and would need one request per member to answer it.
+             */
+            Route::get('/fee-assigns/coverage', [FeeController::class, 'assignCoverage'])
+                ->middleware('permission:fee-assigns.view');
             Route::post('/fee-assigns', [FeeController::class, 'storeAssigns'])
                 ->middleware('permission:fee-assigns.create');
 

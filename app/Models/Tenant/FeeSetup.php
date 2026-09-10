@@ -20,6 +20,7 @@ class FeeSetup extends Model
         'is_share',
         'ledger_id',
         'fine_ledger_id',
+        'fine_rate',
         'is_active',
     ];
 

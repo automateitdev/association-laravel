@@ -73,7 +73,11 @@ class FineService
                 ->where('member_id', $memberId)
                 ->outstanding()
                 ->lockForUpdate()
-                ->get();
+                ->get()
+                // The rate can differ per fee head now, so the head has to be
+                // in hand. Loaded after the lock rather than as part of it:
+                // eager loading inside lockForUpdate would lock fee_setups too.
+                ->load('feeSetup:id,fine_rate');
 
             $examined = 0;
             $fined = 0;
@@ -119,7 +123,7 @@ class FineService
             ->where('fine_date', '<=', $asOf->toDateString())
             ->count();
 
-        $fine = bcmul($this->rate(), (string) $overdue, 2);
+        $fine = bcmul($this->rateFor($assign), (string) $overdue, 2);
 
         // Only write when it actually moved, so an unchanged assignment does not
         // get a new updated_at every night.
@@ -164,7 +168,19 @@ class FineService
      */
     private function suspendIfPastThreshold(int $memberId, int $worstOverdue): bool
     {
-        if ($worstOverdue < $this->suspensionThreshold()) {
+        $threshold = $this->suspensionThreshold();
+
+        /*
+         * A threshold below one means NEVER SUSPEND, which is what anybody
+         * typing zero intends. Without this the comparison reads
+         * `0 < 0` - false - and the member is suspended for having no overdue
+         * periods at all: measured, an active member with an instalment whose
+         * fine had not started went straight to suspended. The settings
+         * endpoint refuses anything below 1, so this is only reachable by
+         * writing the row directly - a seeder, a migration, a console. That is
+         * exactly when nobody is watching.
+         */
+        if ($threshold < 1 || $worstOverdue < $threshold) {
             return false;
         }
 
@@ -187,6 +203,23 @@ class FineService
         ]);
 
         return true;
+    }
+
+    /**
+     * What one overdue period costs on THIS instalment.
+     *
+     * The fee head's own rate when it has one, the association's otherwise.
+     * NULL is not zero here and the difference is the whole point: null means
+     * "whatever the association charges", zero means "this fee head does not
+     * fine". A head marked zero stays at zero however the association's rate
+     * moves, which is what somebody setting up an admission fee or a voluntary
+     * contribution is asking for.
+     */
+    private function rateFor(FeeAssign $assign): string
+    {
+        $own = $assign->feeSetup?->fine_rate;
+
+        return $own === null ? $this->rate() : (string) $own;
     }
 
     private function rate(): string

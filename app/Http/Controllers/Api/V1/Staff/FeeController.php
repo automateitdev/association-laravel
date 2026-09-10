@@ -16,6 +16,7 @@ use App\Services\FeeAssignService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -105,11 +106,30 @@ class FeeController extends Controller
             'amount' => ['required', 'numeric', 'gt:0'],
             'is_share' => ['sometimes', 'boolean'],
 
-            // Both ledgers are mandatory and staff-chosen. The legacy system
-            // stamps the fine ledger silently from config, which cannot work
-            // across associations with different charts of accounts (FR-FEE-2).
+            /*
+             * NULL means the association's rate, 0 means this head never
+             * fines. Absent is null, so every existing fee head keeps behaving
+             * exactly as it did.
+             */
+            'fine_rate' => ['sometimes', 'nullable', 'numeric', 'min:0'],
+
+            // The income ledger is always required and staff-chosen. The
+            // legacy stamps it silently from config, which cannot work across
+            // associations with different charts of accounts (FR-FEE-2).
             'ledger_id' => ['required', 'integer', 'exists:ledgers,id'],
-            'fine_ledger_id' => ['required', 'integer', 'exists:ledgers,id', 'different:ledger_id'],
+
+            /*
+             * The FINE ledger is required only when this head can actually
+             * fine. Demanding it for a fee head set to never fine is asking
+             * where fine income should post for income that cannot exist.
+             */
+            'fine_ledger_id' => [
+                Rule::requiredIf(fn () => (string) $request->input('fine_rate', '') !== '0'),
+                'nullable',
+                'integer',
+                'exists:ledgers,id',
+                'different:ledger_id',
+            ],
         ]);
 
         $setup = FeeSetup::create($validated + ['is_active' => true]);
@@ -124,8 +144,9 @@ class FeeController extends Controller
         $validated = $request->validate([
             'fee_head' => ['sometimes', 'string', 'max:255'],
             'amount' => ['sometimes', 'numeric', 'gt:0'],
+            'fine_rate' => ['sometimes', 'nullable', 'numeric', 'min:0'],
             'ledger_id' => ['sometimes', 'integer', 'exists:ledgers,id'],
-            'fine_ledger_id' => ['sometimes', 'integer', 'exists:ledgers,id'],
+            'fine_ledger_id' => ['sometimes', 'nullable', 'integer', 'exists:ledgers,id'],
 
             // Deactivate rather than delete once assignments exist (FR-FEE-3).
             'is_active' => ['sometimes', 'boolean'],
@@ -250,6 +271,13 @@ class FeeController extends Controller
             'is_share' => $setup->is_share,
             'is_active' => $setup->is_active,
             'ledger' => ['id' => $setup->ledger_id, 'name' => $setup->ledger?->name],
+
+            /*
+             * Null and zero are different answers and the client has to be
+             * able to tell them apart: null is "whatever the association
+             * charges", zero is "this head never fines".
+             */
+            'fine_rate' => $setup->fine_rate === null ? null : (string) $setup->fine_rate,
 
             // Surfaced explicitly. A fee head whose fines land in the wrong
             // account is invisible until someone reads the income statement.

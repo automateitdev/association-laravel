@@ -23,6 +23,99 @@ class FineAccrualTest extends TenantTestCase
     use TenantFixtures;
 
     /**
+     * A fee head can decline to fine at all.
+     *
+     * An admission fee, a building levy, a voluntary contribution - none of
+     * them should accrue a monthly penalty, and until now the only way to stop
+     * one was to switch fines off for the whole association. Zero on the head
+     * means zero however the association's rate moves.
+     */
+    public function test_a_fee_head_set_to_zero_never_fines(): void
+    {
+        $this->inTenant(function () {
+            $this->seedSettings();
+            $member = $this->makeMember();
+            $free = $this->makeFeeSetup(['fee_head' => 'Admission fee', 'fine_rate' => '0.00']);
+
+            $assign = app(FeeAssignService::class)->assign($member->id, $free, '2026-01');
+
+            app(FineService::class)->accrueAll(CarbonImmutable::create(2026, 6, 15));
+
+            $this->assertSame('0.00', (string) $assign->refresh()->fine_amount);
+        });
+    }
+
+    /**
+     * NULL is not zero, and the difference is the whole design.
+     *
+     * Null means "whatever the association charges" - which is what every fee
+     * head did before the column existed, so nothing changes for any of them.
+     * A default of zero would have silenced fines everywhere on the day it
+     * shipped.
+     */
+    public function test_a_fee_head_without_its_own_rate_uses_the_association_rate(): void
+    {
+        $this->inTenant(function () {
+            $this->seedSettings();
+            $member = $this->makeMember();
+            $ordinary = $this->makeFeeSetup(['fee_head' => 'Monthly Subscription']);
+
+            $this->assertNull($ordinary->fine_rate);
+
+            $assign = app(FeeAssignService::class)->assign($member->id, $ordinary, '2026-01');
+            app(FineService::class)->accrueAll(CarbonImmutable::create(2026, 2, 15));
+
+            // Two elapsed periods at the association's 100.00.
+            $this->assertSame('200.00', (string) $assign->refresh()->fine_amount);
+        });
+    }
+
+    /** A head with its own rate charges that, not the association's. */
+    public function test_a_fee_head_rate_overrides_the_association_rate(): void
+    {
+        $this->inTenant(function () {
+            $this->seedSettings();
+            $member = $this->makeMember();
+            $steep = $this->makeFeeSetup(['fee_head' => 'Late levy', 'fine_rate' => '250.00']);
+
+            $assign = app(FeeAssignService::class)->assign($member->id, $steep, '2026-01');
+            app(FineService::class)->accrueAll(CarbonImmutable::create(2026, 2, 15));
+
+            $this->assertSame('500.00', (string) $assign->refresh()->fine_amount);
+        });
+    }
+
+    /**
+     * A threshold below one means never suspend, which is what typing zero
+     * means to a person.
+     *
+     * Before the guard the comparison read `0 < 0` - false - so a member was
+     * suspended for having NO overdue periods. Measured on a real tenant: an
+     * active member with an instalment whose fine had not started went
+     * straight to suspended. The settings endpoint refuses anything below 1,
+     * so this was only reachable from a seeder or a console - which is exactly
+     * when nobody is watching.
+     */
+    public function test_a_threshold_below_one_never_suspends(): void
+    {
+        $this->inTenant(function () {
+            $this->seedSettings();
+            Setting::query()->updateOrCreate(
+                ['key' => Setting::SUSPENSION_THRESHOLD],
+                ['value' => 0, 'group' => 'fine']
+            );
+
+            $member = $this->makeMember();
+            $feeSetup = $this->makeFeeSetup();
+
+            app(FeeAssignService::class)->assign($member->id, $feeSetup, '2026-01');
+            app(FineService::class)->accrueAll(CarbonImmutable::create(2026, 12, 31));
+
+            $this->assertSame(Member::STATUS_ACTIVE, $member->refresh()->status);
+        });
+    }
+
+    /**
      * THE FINE DAY CAN BE SET PER ASSIGNMENT, as the legacy screen allows.
      *
      * Its fee-assign form carries a fine-day dropdown defaulting to the 21st,

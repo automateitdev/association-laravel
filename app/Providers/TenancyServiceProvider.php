@@ -118,6 +118,21 @@ class TenancyServiceProvider extends ServiceProvider
         }
     }
 
+    /**
+     * THERE IS NO routes/tenant.php, and there must not be one.
+     *
+     * This application identifies a tenant by the X-Tenant header, never by
+     * domain - one deployment serves every association. The stock scaffolding
+     * that ships with the package registers `GET /` behind
+     * InitializeTenancyByDomain, and Laravel keys routes by method and URI, so
+     * a second `GET /` registered here REPLACES the one from routes/web.php
+     * rather than losing to it. The console host then answered every request
+     * to / with TenantCouldNotBeIdentifiedOnDomain - a 500 on the front page,
+     * from a file nobody had touched since the project was created.
+     *
+     * The guard below is kept so the package's own contract still holds if a
+     * domain-identified route is ever genuinely wanted.
+     */
     protected function mapRoutes()
     {
         $this->app->booted(function () {

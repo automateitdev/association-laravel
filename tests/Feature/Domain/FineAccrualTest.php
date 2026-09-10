@@ -23,6 +23,80 @@ class FineAccrualTest extends TenantTestCase
     use TenantFixtures;
 
     /**
+     * THE FINE DAY CAN BE SET PER ASSIGNMENT, as the legacy screen allows.
+     *
+     * Its fee-assign form carries a fine-day dropdown defaulting to the 21st,
+     * and associations use it: a fee agreed on different terms, a month where
+     * the committee allowed longer, a correction re-entered as it originally
+     * stood. The association's grace period is still the rule - this is the
+     * exception to it.
+     */
+    public function test_a_fine_day_puts_the_first_fine_on_that_day_of_the_month(): void
+    {
+        $this->inTenant(function () {
+            $this->seedSettings();
+            $member = $this->makeMember();
+            $feeSetup = $this->makeFeeSetup();
+
+            $assign = app(FeeAssignService::class)->assign($member->id, $feeSetup, '2026-01', fineDay: 21);
+
+            $this->assertSame('2026-01-21', CarbonImmutable::parse($assign->fine_date)->toDateString());
+
+            // Nothing is owed on the 20th, and one fine is owed on the 21st -
+            // the boundary is the whole point of choosing a day.
+            app(FineService::class)->accrueAll(CarbonImmutable::create(2026, 1, 20));
+            $this->assertSame('0.00', (string) $assign->refresh()->fine_amount);
+
+            app(FineService::class)->accrueAll(CarbonImmutable::create(2026, 1, 21));
+            $this->assertSame('100.00', (string) $assign->refresh()->fine_amount);
+        });
+    }
+
+    /**
+     * A day past the end of a short month lands on its last day, not in the
+     * next one.
+     *
+     * The legacy builds this date by pasting strings together - "2026-02-30" -
+     * which PHP parses as the 2nd of March. The fine then starts in a month
+     * the instalment does not belong to, and nothing on screen says so. The
+     * last day of February is what somebody choosing 30 meant.
+     */
+    public function test_a_fine_day_past_the_end_of_the_month_lands_on_its_last_day(): void
+    {
+        $this->inTenant(function () {
+            $this->seedSettings();
+            $member = $this->makeMember();
+            $feeSetup = $this->makeFeeSetup();
+
+            $assign = app(FeeAssignService::class)->assign($member->id, $feeSetup, '2026-02', fineDay: 31);
+
+            $this->assertSame('2026-02-28', CarbonImmutable::parse($assign->fine_date)->toDateString());
+        });
+    }
+
+    /**
+     * Left alone, the association's own setting decides - which is what makes
+     * the day above an override rather than a question asked every time.
+     */
+    public function test_without_a_fine_day_the_association_grace_period_applies(): void
+    {
+        $this->inTenant(function () {
+            $this->seedSettings();
+            Setting::query()->updateOrCreate(
+                ['key' => Setting::FINE_GRACE_DAYS],
+                ['value' => 20, 'group' => 'fine']
+            );
+
+            $member = $this->makeMember();
+            $feeSetup = $this->makeFeeSetup();
+
+            $assign = app(FeeAssignService::class)->assign($member->id, $feeSetup, '2026-01');
+
+            $this->assertSame('2026-01-21', CarbonImmutable::parse($assign->fine_date)->toDateString());
+        });
+    }
+
+    /**
      * T-1: assign a fee, run the fine clock three periods forward, assert the
      * fine is 3 x rate and the member is suspended.
      */

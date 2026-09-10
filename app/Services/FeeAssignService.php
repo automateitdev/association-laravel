@@ -33,9 +33,16 @@ class FeeAssignService
      * never a second row, never an exception.
      *
      * @param  string  $period  YYYY-MM
+     * @param  int|null  $fineDay  Day of the month the fine starts, overriding
+     *                             the association's grace period for this
+     *                             assignment only. See fineDateFor().
      */
-    public function assign(int $memberId, FeeSetup $feeSetup, string $period): FeeAssign
-    {
+    public function assign(
+        int $memberId,
+        FeeSetup $feeSetup,
+        string $period,
+        ?int $fineDay = null,
+    ): FeeAssign {
         $this->guardPeriod($period);
 
         $existing = FeeAssign::query()
@@ -49,7 +56,7 @@ class FeeAssignService
         }
 
         $assignDate = CarbonImmutable::createFromFormat('Y-m-d', $period.'-01')->startOfDay();
-        $fineDate = $assignDate->addDays($this->graceDays());
+        $fineDate = $this->fineDateFor($assignDate, $fineDay);
 
         try {
             return DB::transaction(function () use ($memberId, $feeSetup, $period, $assignDate, $fineDate) {
@@ -107,8 +114,12 @@ class FeeAssignService
      * @param  array<string>  $periods  YYYY-MM
      * @return array{created: int, skipped_duplicate: int, failed: array<string>}
      */
-    public function bulkAssign(array $memberIds, FeeSetup $feeSetup, array $periods): array
-    {
+    public function bulkAssign(
+        array $memberIds,
+        FeeSetup $feeSetup,
+        array $periods,
+        ?int $fineDay = null,
+    ): array {
         $created = 0;
         $skipped = 0;
         $failed = [];
@@ -122,7 +133,7 @@ class FeeAssignService
                         ->where('period', $period)
                         ->exists();
 
-                    $this->assign($memberId, $feeSetup, $period);
+                    $this->assign($memberId, $feeSetup, $period, $fineDay);
 
                     $before ? $skipped++ : $created++;
                 } catch (\Throwable $e) {
@@ -137,6 +148,35 @@ class FeeAssignService
             'skipped_duplicate' => $skipped,
             'failed' => $failed,
         ];
+    }
+
+    /**
+     * When the fine clock starts for one instalment.
+     *
+     * WHY AN OVERRIDE EXISTS. The association's grace period is the rule, and
+     * it is right nearly always. The legacy screen nevertheless put a fine-day
+     * dropdown on every assignment, defaulting to the 21st, and associations
+     * used it: a fee agreed with a different due day, a month where the
+     * committee allowed longer, a correction being re-entered on the terms it
+     * originally had. Removing it in the rewrite took away something staff had
+     * and gave nothing back, so it is here - as an override, not as a question
+     * asked every time.
+     *
+     * A DAY OF THE MONTH, not an offset, because that is how it is spoken:
+     * "the fine starts on the 21st", not "twenty days after the first".
+     *
+     * CLAMPED TO THE LENGTH OF THE MONTH. The legacy dropdown offers up to 30
+     * and builds its date by string concatenation, so "30" in February parses
+     * as the 2nd of March - a fine that starts in the wrong month, quietly.
+     * The last day of a short month is what somebody choosing 30 means.
+     */
+    private function fineDateFor(CarbonImmutable $assignDate, ?int $fineDay): CarbonImmutable
+    {
+        if ($fineDay === null) {
+            return $assignDate->addDays($this->graceDays());
+        }
+
+        return $assignDate->setUnitNoOverflow('day', $fineDay, 'month');
     }
 
     private function graceDays(): int

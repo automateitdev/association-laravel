@@ -211,6 +211,14 @@ class FeeController extends Controller
             'member_ids.*' => ['integer', 'exists:members,id'],
             'periods' => ['required', 'array', 'min:1'],
             'periods.*' => ['string', 'regex:/^\d{4}-(0[1-9]|1[0-2])$/'],
+
+            /*
+             * Optional, and absent means "use the association's grace period".
+             * The legacy screen asked for this on every assignment; here the
+             * setting answers it unless somebody says otherwise. 31 is allowed
+             * and clamped to the length of each month - see fineDateFor.
+             */
+            'fine_day' => ['sometimes', 'nullable', 'integer', 'between:1,31'],
         ]);
 
         $setup = FeeSetup::findOrFail($validated['fee_setup_id']);
@@ -226,6 +234,7 @@ class FeeController extends Controller
             $validated['member_ids'],
             $setup,
             $validated['periods'],
+            $validated['fine_day'] ?? null,
         );
 
         return response()->json(['data' => $summary], 201);

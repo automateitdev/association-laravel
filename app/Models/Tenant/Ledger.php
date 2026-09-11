@@ -15,6 +15,7 @@ class Ledger extends Model
         'name',
         'code',
         'opening_balance',
+        'is_cash',
         'is_active',
     ];
 
@@ -22,6 +23,7 @@ class Ledger extends Model
     {
         return [
             'opening_balance' => 'decimal:2',
+            'is_cash' => 'boolean',
             'is_active' => 'boolean',
         ];
     }

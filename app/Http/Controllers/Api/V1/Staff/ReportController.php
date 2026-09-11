@@ -13,6 +13,7 @@ use App\Models\Tenant\PaymentInfoItem;
 use App\Reports\Column;
 use App\Reports\ExportsListings;
 use App\Reports\Report;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -123,6 +124,101 @@ class ReportController extends Controller
         ]);
     }
 
+    /**
+     * Trial balance: every account's balance, and whether the books balance.
+     *
+     * WHAT IT IS FOR, stated because it is the least self-explanatory of the
+     * three: a trial balance proves that every entry was made on both sides. If
+     * the debit column and the credit column do not agree, something is wrong
+     * with the books themselves rather than with any one account, and nothing
+     * computed from them can be trusted until it is found.
+     *
+     * SO IT SAYS SO. `balanced` is the answer this report exists to give, and
+     * `difference` is what to go looking for. A trial balance that quietly
+     * printed two unequal totals and left the reader to subtract them would be
+     * a worksheet, not a check.
+     *
+     * In this system the entries cannot be unbalanced - a voucher is refused
+     * unless it balances, and every payment posts a pair (FR-ACC-6) - so a
+     * difference here means an OPENING BALANCE is wrong, which is the one
+     * figure staff type in by hand.
+     *
+     * Accounts with nothing in them are left out: a chart of accounts is a
+     * list of what an association might use, and a trial balance is a statement
+     * of what it did.
+     */
+    public function trialBalance(Request $request): JsonResponse
+    {
+        $asOf = $this->asOfFilter($request);
+        $result = $this->trialBalanceRows($asOf);
+
+        return response()->json([
+            'data' => $result['rows'],
+            'meta' => ['as_of' => $asOf, 'accounts' => count($result['rows'])] + $result['totals'],
+        ]);
+    }
+
+    /**
+     * Balance sheet: what the association owns, owes, and is worth.
+     *
+     * THE SURPLUS IS PART OF IT, and that is the thing most easily got wrong.
+     * Income and expense accounts are not on a balance sheet, but the result
+     * they produce is: everything the association has earned less everything it
+     * has spent, since the beginning, belongs to the members and sits in equity.
+     * Leave it out and the statement does not balance, by exactly that amount.
+     *
+     * It is shown as its own line - "Accumulated surplus" - rather than folded
+     * into Share Capital, because it is not share capital: nobody subscribed
+     * for it. An association reading its own balance sheet should be able to
+     * see how much of what it is worth was paid in and how much was earned.
+     *
+     * AS AT A DATE, not over a period. Everything up to `as_of`, opening
+     * balances included - which is the opposite of the income statement, and
+     * the reason that report refuses them.
+     */
+    public function balanceSheet(Request $request): JsonResponse
+    {
+        $asOf = $this->asOfFilter($request);
+        $result = $this->balanceSheetRows($asOf);
+
+        return response()->json([
+            'data' => $result['rows'],
+            'meta' => ['as_of' => $asOf] + $result['totals'],
+        ]);
+    }
+
+    /**
+     * Cash summary: what was in the till and the bank, what moved, what is left.
+     *
+     * ONE ROW PER CASH ACCOUNT, with opening, in, out and closing. The question
+     * it answers is the one an association asks before a committee meeting -
+     * "what have we actually got?" - and the columns are in the order somebody
+     * says that out loud.
+     *
+     * WHICH ACCOUNTS ARE CASH is the association's own answer, from `is_cash`
+     * on the ledger, not a guess from a group name that anybody may rename. See
+     * the migration that added it. When nothing is marked the report says so
+     * and says where to fix it, rather than returning an empty table that looks
+     * like a quiet period.
+     *
+     * Closing is computed from opening and movement rather than read back, so
+     * the four columns on a row are arithmetic the reader can check by eye.
+     */
+    public function cashSummary(Request $request): JsonResponse
+    {
+        $filters = $this->statementFilters($request);
+        $result = $this->cashSummaryRows($filters);
+
+        return response()->json([
+            'data' => $result['rows'],
+            'meta' => [
+                'from' => $filters['from'],
+                'to' => $filters['to'],
+                'accounts' => count($result['rows']),
+            ] + $result['totals'],
+        ]);
+    }
+
     // ---------------------------------------------------------------- exports
 
     public function exportMemberwisePaid(Request $request): Response
@@ -148,6 +244,111 @@ class ReportController extends Controller
                 currency: $this->currency(),
             ),
             $format,
+        );
+    }
+
+    public function exportTrialBalance(Request $request): Response
+    {
+        $asOf = $this->asOfFilter($request);
+        $result = $this->trialBalanceRows($asOf);
+
+        if (($tooLarge = $this->rejectIfTooLarge($result['rows'])) !== null) {
+            return $tooLarge;
+        }
+
+        return $this->sendExport(
+            new Report(
+                title: 'Trial balance',
+                association: $this->associationName(),
+                columns: [
+                    new Column('ledger', 'Account'),
+                    new Column('account_group', 'Group'),
+                    new Column('category', 'Category'),
+                    new Column('debit', 'Debit', Column::TYPE_MONEY, $result['totals']['total_debit']),
+                    new Column('credit', 'Credit', Column::TYPE_MONEY, $result['totals']['total_credit']),
+                ],
+                rows: $result['rows'],
+                filters: array_filter([
+                    'As at' => $asOf,
+
+                    // Printed on the file, because a trial balance that does not
+                    // balance is the whole finding and must not be lost when the
+                    // rows are read away from the screen.
+                    'Out of balance by' => $result['totals']['balanced']
+                        ? null
+                        : $result['totals']['difference'],
+                ]),
+                currency: $this->currency(),
+            ),
+            $this->exportFormat($request),
+        );
+    }
+
+    public function exportBalanceSheet(Request $request): Response
+    {
+        $asOf = $this->asOfFilter($request);
+        $result = $this->balanceSheetRows($asOf);
+
+        if (($tooLarge = $this->rejectIfTooLarge($result['rows'])) !== null) {
+            return $tooLarge;
+        }
+
+        return $this->sendExport(
+            new Report(
+                title: 'Balance sheet',
+                association: $this->associationName(),
+                columns: [
+                    new Column('section', 'Section'),
+                    new Column('account_group', 'Group'),
+                    new Column('ledger', 'Account'),
+
+                    /*
+                     * No column total. Assets and the funds against them are the
+                     * two halves of one statement and summing them together
+                     * produces a number with no meaning - twice the size of the
+                     * association. The halves are named in `filters` instead.
+                     */
+                    new Column('amount', 'Amount', Column::TYPE_MONEY),
+                ],
+                rows: $result['rows'],
+                filters: [
+                    'As at' => $asOf,
+                    'Total assets' => $result['totals']['total_assets'],
+                    'Total liabilities' => $result['totals']['total_liabilities'],
+                    'Total equity' => $result['totals']['total_equity'],
+                ],
+                currency: $this->currency(),
+            ),
+            $this->exportFormat($request),
+        );
+    }
+
+    public function exportCashSummary(Request $request): Response
+    {
+        $filters = $this->statementFilters($request);
+        $result = $this->cashSummaryRows($filters);
+
+        if (($tooLarge = $this->rejectIfTooLarge($result['rows'])) !== null) {
+            return $tooLarge;
+        }
+
+        return $this->sendExport(
+            new Report(
+                title: 'Cash summary',
+                association: $this->associationName(),
+                columns: [
+                    new Column('ledger', 'Account'),
+                    new Column('account_group', 'Group'),
+                    new Column('opening', 'Opening', Column::TYPE_MONEY, $result['totals']['total_opening']),
+                    new Column('received', 'Received', Column::TYPE_MONEY, $result['totals']['total_received']),
+                    new Column('paid', 'Paid', Column::TYPE_MONEY, $result['totals']['total_paid']),
+                    new Column('closing', 'Closing', Column::TYPE_MONEY, $result['totals']['total_closing']),
+                ],
+                rows: $result['rows'],
+                filters: ['Period' => $this->describePeriod($filters['from'], $filters['to'])],
+                currency: $this->currency(),
+            ),
+            $this->exportFormat($request),
         );
     }
 
@@ -575,6 +776,301 @@ class ReportController extends Controller
      *
      * Absent both, it is today's snapshot, exactly as before.
      */
+    /** A single date, defaulting to today. These three are positions, not periods. */
+    private function asOfFilter(Request $request): string
+    {
+        $validated = $request->validate(['as_of' => ['nullable', 'date']]);
+
+        return $validated['as_of'] ?? now()->toDateString();
+    }
+
+    /**
+     * @return array{rows: list<array<string, string>>, totals: array<string, string|bool>}
+     */
+    private function trialBalanceRows(string $asOf): array
+    {
+        $rows = [];
+        $debits = '0.00';
+        $credits = '0.00';
+
+        foreach ($this->ledgerBalances(null, $asOf) as $row) {
+            $balance = bcadd($this->signedOpening($row), $this->signedMovement($row), 2);
+
+            // A chart lists what an association might use; this states what it
+            // did. An account that never moved and opened at nothing is not a
+            // line of a trial balance.
+            if (bccomp($balance, '0.00', 2) === 0) {
+                continue;
+            }
+
+            $isDebit = bccomp($balance, '0.00', 2) > 0;
+            $magnitude = $isDebit ? $balance : bcsub('0.00', $balance, 2);
+
+            $rows[] = [
+                'ledger' => (string) $row->ledger,
+                'account_group' => (string) $row->account_group,
+                'category' => (string) $row->category,
+                'debit' => $isDebit ? $magnitude : '0.00',
+                'credit' => $isDebit ? '0.00' : $magnitude,
+            ];
+
+            if ($isDebit) {
+                $debits = bcadd($debits, $magnitude, 2);
+            } else {
+                $credits = bcadd($credits, $magnitude, 2);
+            }
+        }
+
+        $difference = bcsub($debits, $credits, 2);
+
+        return [
+            'rows' => $rows,
+            'totals' => [
+                'total_debit' => $debits,
+                'total_credit' => $credits,
+
+                /*
+                 * The answer this report exists to give. Entries cannot be
+                 * unbalanced here - a voucher is refused unless it balances and
+                 * every payment posts a pair - so a difference means an OPENING
+                 * BALANCE is wrong, which is the one figure staff type by hand.
+                 */
+                'balanced' => bccomp($difference, '0.00', 2) === 0,
+                'difference' => $difference,
+            ],
+        ];
+    }
+
+    /**
+     * @return array{rows: list<array<string, string>>, totals: array<string, string|bool>}
+     */
+    private function balanceSheetRows(string $asOf): array
+    {
+        $rows = [];
+        $assets = '0.00';
+        $liabilities = '0.00';
+        $equity = '0.00';
+        $surplus = '0.00';
+
+        foreach ($this->ledgerBalances(null, $asOf) as $row) {
+            $balance = bcadd($this->signedOpening($row), $this->signedMovement($row), 2);
+
+            /*
+             * Income and expense accounts are not lines of a balance sheet -
+             * but the result they produce is. Everything earned less everything
+             * spent, since the beginning, belongs to the members and is added
+             * to equity below as one line. Leave it out and the statement fails
+             * to balance by exactly that amount.
+             */
+            if (in_array($row->type, ['income', 'expense'], true)) {
+                // Debit-positive, so an expense adds and income subtracts; the
+                // surplus is the negative of that sum.
+                $surplus = bcsub($surplus, $balance, 2);
+
+                continue;
+            }
+
+            if (bccomp($balance, '0.00', 2) === 0) {
+                continue;
+            }
+
+            // Assets read naturally as debits; what the association owes and
+            // what it is worth read naturally as credits.
+            $presented = $row->type === 'asset' ? $balance : bcsub('0.00', $balance, 2);
+
+            $rows[] = [
+                'section' => (string) $row->type,
+                'account_group' => (string) $row->account_group,
+                'ledger' => (string) $row->ledger,
+                'amount' => $presented,
+            ];
+
+            match ($row->type) {
+                'asset' => $assets = bcadd($assets, $presented, 2),
+                'liability' => $liabilities = bcadd($liabilities, $presented, 2),
+                default => $equity = bcadd($equity, $presented, 2),
+            };
+        }
+
+        if (bccomp($surplus, '0.00', 2) !== 0) {
+            $rows[] = [
+                'section' => 'equity',
+                'account_group' => 'Retained earnings',
+
+                /*
+                 * Its own line rather than folded into Share Capital, because
+                 * it is not share capital - nobody subscribed for it. An
+                 * association should be able to see how much of what it is
+                 * worth was paid in and how much was earned.
+                 */
+                'ledger' => 'Accumulated surplus',
+                'amount' => $surplus,
+            ];
+        }
+
+        $funds = bcadd(bcadd($liabilities, $equity, 2), $surplus, 2);
+        $difference = bcsub($assets, $funds, 2);
+
+        return [
+            'rows' => $rows,
+            'totals' => [
+                'total_assets' => $assets,
+                'total_liabilities' => $liabilities,
+                'total_equity' => bcadd($equity, $surplus, 2),
+                'accumulated_surplus' => $surplus,
+                'balanced' => bccomp($difference, '0.00', 2) === 0,
+                'difference' => $difference,
+            ],
+        ];
+    }
+
+    /**
+     * @param  array{from: string, to: string}  $filters
+     * @return array{rows: list<array<string, string>>, totals: array<string, string>}
+     */
+    private function cashSummaryRows(array $filters): array
+    {
+        /*
+         * TWO PASSES, because the opening balance is a different question from
+         * the movement. The first asks what was there the day before the period
+         * began; the second asks what moved inside it. Asking one query for
+         * both would mean subtracting the period back out of the total, which
+         * is the same answer by a route nobody can check.
+         */
+        $dayBefore = CarbonImmutable::createFromFormat('Y-m-d', $filters['from'])
+            ->subDay()
+            ->toDateString();
+
+        $openings = [];
+
+        foreach ($this->ledgerBalances(null, $dayBefore) as $row) {
+            if (! $row->is_cash) {
+                continue;
+            }
+
+            $openings[$row->id] = bcadd($this->signedOpening($row), $this->signedMovement($row), 2);
+        }
+
+        $rows = [];
+        $totalOpening = '0.00';
+        $totalIn = '0.00';
+        $totalOut = '0.00';
+
+        foreach ($this->ledgerBalances($filters['from'], $filters['to']) as $row) {
+            if (! $row->is_cash) {
+                continue;
+            }
+
+            $opening = $openings[$row->id] ?? $this->signedOpening($row);
+            $in = (string) $row->debit;
+            $out = (string) $row->credit;
+
+            $rows[] = [
+                'ledger' => (string) $row->ledger,
+                'account_group' => (string) $row->account_group,
+                'opening' => $opening,
+                'received' => $in,
+                'paid' => $out,
+
+                // Computed, not read back, so the four figures on a row are
+                // arithmetic the reader can check by eye.
+                'closing' => bcadd($opening, bcsub($in, $out, 2), 2),
+            ];
+
+            $totalOpening = bcadd($totalOpening, $opening, 2);
+            $totalIn = bcadd($totalIn, $in, 2);
+            $totalOut = bcadd($totalOut, $out, 2);
+        }
+
+        return [
+            'rows' => $rows,
+            'totals' => [
+                'total_opening' => $totalOpening,
+                'total_received' => $totalIn,
+                'total_paid' => $totalOut,
+                'total_closing' => bcadd($totalOpening, bcsub($totalIn, $totalOut, 2), 2),
+            ],
+        ];
+    }
+
+    /**
+     * Every ledger's balance as at a date, in ONE debit-positive number.
+     *
+     * The three statements below are the same arithmetic asked three ways, so
+     * it is done once here rather than three times slightly differently.
+     *
+     * WHY DEBIT-POSITIVE. A ledger's balance has a side, and carrying that side
+     * around as a separate column means every caller has to remember which way
+     * round its account type runs. Signed, the rule is stated once: a positive
+     * balance is a debit balance, a negative one is a credit balance, and the
+     * sum of every balance in a set of books is zero. A trial balance is that
+     * sentence turned into two columns; a balance sheet is it split by
+     * category.
+     *
+     * THE OPENING BALANCE HAS A SIDE TOO, and the column does not say which.
+     * `ledgers.opening_balance` is an unsigned decimal, so its side comes from
+     * the account: assets and expenses are debit-normal, liabilities, equity
+     * and income are credit-normal, and a positive opening means "the normal
+     * side for this kind of account". That is the convention every chart of
+     * accounts uses, and the alternative - a second column saying which side -
+     * would be a field somebody has to keep correct.
+     *
+     * `$from` EXCLUDES EARLIER MOVEMENT rather than filtering it out. A cash
+     * summary wants the period's movement with the opening stated separately;
+     * a balance sheet wants everything up to a date. Passing null asks for the
+     * second.
+     *
+     * @return \Illuminate\Support\Collection<int, object>
+     */
+    private function ledgerBalances(?string $from, string $asOf)
+    {
+        $movement = LedgerTrace::query()
+            ->selectRaw('ledger_id, SUM(debit) as debit, SUM(credit) as credit')
+            ->where('posted_on', '<=', $asOf)
+            ->when($from !== null, fn ($q) => $q->where('posted_on', '>=', $from))
+            ->groupBy('ledger_id');
+
+        return DB::table('ledgers')
+            ->join('account_groups', 'account_groups.id', '=', 'ledgers.account_group_id')
+            ->join('account_categories', 'account_categories.id', '=', 'account_groups.account_category_id')
+            ->leftJoinSub($movement, 'm', 'm.ledger_id', '=', 'ledgers.id')
+            ->orderByRaw("FIELD(account_categories.type, 'asset', 'liability', 'equity', 'income', 'expense')")
+            ->orderBy('account_groups.name')
+            ->orderBy('ledgers.name')
+            ->selectRaw(
+                'ledgers.id, ledgers.name as ledger, ledgers.opening_balance, ledgers.is_cash, '
+                .'account_groups.name as account_group, account_categories.name as category, '
+                .'account_categories.type as type, '
+                .'COALESCE(m.debit, 0) as debit, COALESCE(m.credit, 0) as credit'
+            )
+            ->get();
+    }
+
+    /** Debit-normal kinds. A positive opening balance on these is a debit. */
+    private const DEBIT_NORMAL = ['asset', 'expense'];
+
+    /**
+     * The opening balance with its side applied, as a debit-positive string.
+     *
+     * Only meaningful when the caller asked for everything up to a date. A
+     * report that states an opening separately - the cash summary - adds it
+     * itself, from a prior call.
+     */
+    private function signedOpening(object $row): string
+    {
+        $opening = (string) $row->opening_balance;
+
+        return in_array($row->type, self::DEBIT_NORMAL, true)
+            ? $opening
+            : bcsub('0.00', $opening, 2);
+    }
+
+    /** Movement in debit-positive terms: what went in less what went out. */
+    private function signedMovement(object $row): string
+    {
+        return bcsub((string) $row->debit, (string) $row->credit, 2);
+    }
+
     /**
      * @return array{from: string, to: string}
      *

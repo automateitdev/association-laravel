@@ -97,6 +97,11 @@ class LedgerController extends Controller
             'name' => ['required', 'string', 'max:255'],
             'code' => ['nullable', 'string', 'max:50', 'unique:ledgers,code'],
             'opening_balance' => ['sometimes', 'numeric'],
+
+            // Whether money physically sits here, for the cash summary. The
+            // association's own answer rather than a guess from a group name
+            // anybody may rename - see the migration that added it.
+            'is_cash' => ['sometimes', 'boolean'],
             'is_active' => ['sometimes', 'boolean'],
         ]);
 
@@ -143,6 +148,11 @@ class LedgerController extends Controller
                 Rule::unique('ledgers', 'code')->ignore($record->id),
             ],
             'opening_balance' => ['sometimes', 'numeric'],
+
+            // Whether money physically sits here, for the cash summary. The
+            // association's own answer rather than a guess from a group name
+            // anybody may rename - see the migration that added it.
+            'is_cash' => ['sometimes', 'boolean'],
             'is_active' => ['sometimes', 'boolean'],
         ]);
 
@@ -245,6 +255,7 @@ class LedgerController extends Controller
             'type' => $l->accountGroup?->category?->type,
 
             'opening_balance' => (string) $l->opening_balance,
+            'is_cash' => (bool) $l->is_cash,
             'is_active' => (bool) $l->is_active,
         ];
     }

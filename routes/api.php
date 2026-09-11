@@ -531,6 +531,23 @@ Route::prefix('v1')->group(function () {
                 ->middleware('permission:reports.income-statement');
 
             /*
+             * The other three statements a committee reads. Each has its own
+             * permission for the same reason the income statement does: what
+             * the association is worth, and whether its books balance, is not
+             * the counter clerk's business.
+             *
+             * These are POSITIONS - `as_of`, one date - where the income
+             * statement and the cash summary are periods. A balance sheet over
+             * a range is not a thing.
+             */
+            Route::get('/reports/trial-balance', [ReportController::class, 'trialBalance'])
+                ->middleware('permission:reports.trial-balance');
+            Route::get('/reports/balance-sheet', [ReportController::class, 'balanceSheet'])
+                ->middleware('permission:reports.balance-sheet');
+            Route::get('/reports/cash-summary', [ReportController::class, 'cashSummary'])
+                ->middleware('permission:reports.cash-summary');
+
+            /*
              * FR-REP-6. Deliberately its own permission: this report names
              * members whose figures are wrong, which is not the same audience
              * as the reports staff read every day.
@@ -554,6 +571,12 @@ Route::prefix('v1')->group(function () {
                 ->middleware(['permission:reports.due', 'permission:reports.export']);
             Route::get('/reports/income-statement/export', [ReportController::class, 'exportIncomeStatement'])
                 ->middleware(['permission:reports.income-statement', 'permission:reports.export']);
+            Route::get('/reports/trial-balance/export', [ReportController::class, 'exportTrialBalance'])
+                ->middleware(['permission:reports.trial-balance', 'permission:reports.export']);
+            Route::get('/reports/balance-sheet/export', [ReportController::class, 'exportBalanceSheet'])
+                ->middleware(['permission:reports.balance-sheet', 'permission:reports.export']);
+            Route::get('/reports/cash-summary/export', [ReportController::class, 'exportCashSummary'])
+                ->middleware(['permission:reports.cash-summary', 'permission:reports.export']);
             Route::get('/reports/inconsistencies/export', [AuditController::class, 'export'])
                 ->middleware(['permission:reports.inconsistency', 'permission:reports.export']);
         });

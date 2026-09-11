@@ -61,8 +61,15 @@ class TenantSeedService
 
             'Shares' => ['shares.view', 'shares.transfer'],
 
+            /*
+             * One permission per report, matching what each one exposes. The
+             * three statements are not the same audience as the member-by-member
+             * reports: what the association is worth and whether its books
+             * balance is a committee's business, not the counter's.
+             */
             'Reports' => [
                 'reports.paid', 'reports.due', 'reports.income-statement',
+                'reports.balance-sheet', 'reports.trial-balance', 'reports.cash-summary',
                 'reports.inconsistency', 'reports.export',
             ],
 

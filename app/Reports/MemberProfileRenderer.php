@@ -6,6 +6,7 @@ namespace App\Reports;
 
 use App\Models\Tenant\Document;
 use App\Models\Tenant\Member;
+use App\Models\Tenant\MemberPreference;
 use App\Models\Tenant\Nominee;
 use App\Services\DocumentService;
 use Illuminate\Database\Eloquent\Model;
@@ -49,9 +50,12 @@ use Symfony\Component\HttpFoundation\Response;
  *    NID" is a question an office asks, and the answer belongs on the profile
  *    it prints for them.
  *
- * WHAT IS NOT HERE: the legacy's fourth section, `member_choices` - the housing
- * questionnaire. BCS has no such table yet; see bcs-docs/12-legacy-sweep.md
- * §2B, where it sits as its own item. 18 of 315 members ever answered it.
+ * 5. IT CARRIES THE HOUSING QUESTIONNAIRE, which is the legacy's fourth
+ *    section and was missing from the first version of this document because
+ *    BCS had no table for it. It now does. Only the projects the member has
+ *    actually ANSWERED are printed: three empty blocks on 297 of 315 profiles
+ *    would be three blocks nobody reads, which is how the legacy's own count of
+ *    that table came to be wrong by a factor of fifteen.
  */
 class MemberProfileRenderer
 {
@@ -129,6 +133,7 @@ class MemberProfileRenderer
             'associatorInfo',
             'introducedBy.associatorInfo',
             'nominees',
+            'preferences.introducedBy:id,name',
         ]);
 
         return view('reports.member-profile', [
@@ -142,6 +147,18 @@ class MemberProfileRenderer
                 'photo' => $this->photograph($n),
             ])->all(),
             'documents' => $this->documents->list($member),
+
+            /*
+             * ANSWERED ONLY. A profile that printed three empty housing blocks
+             * for the 297 members who never filled the form in would teach its
+             * readers to skip the section - and this is a housing cooperative,
+             * so it is the section that matters most on the eighteen where it
+             * says something.
+             */
+            'preferences' => $member->preferences
+                ->filter(fn (MemberPreference $p) => $p->isAnswered())
+                ->values()
+                ->all(),
             'generatedAt' => now()->format('j M Y, g:i a'),
         ])->render();
     }

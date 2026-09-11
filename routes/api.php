@@ -16,6 +16,7 @@ use App\Http\Controllers\Api\V1\Staff\CollectionController;
 use App\Http\Controllers\Api\V1\Staff\FeeController;
 use App\Http\Controllers\Api\V1\Staff\LedgerController;
 use App\Http\Controllers\Api\V1\Staff\MemberController;
+use App\Http\Controllers\Api\V1\Staff\MemberPreferenceController;
 use App\Http\Controllers\Api\V1\Staff\NomineeController;
 use App\Http\Controllers\Api\V1\Staff\PaymentApprovalController;
 use App\Http\Controllers\Api\V1\Staff\ProfileUpdateController;
@@ -282,6 +283,22 @@ Route::prefix('v1')->group(function () {
              * no reason to stop them correcting it, and splitting the two would
              * be a distinction nobody asked for.
              */
+            /*
+             * What a member wants from the association's housing (legacy
+             * `member_choices`). Part of the member record, so it is gated the
+             * same way: reading is `members.view`, writing is `members.edit`.
+             *
+             * `/options` needs no member at all - it is the districts and the
+             * ranges a client offers - and sits on its own path rather than
+             * under `{member}`, so nothing has to keep a word and an id apart.
+             */
+            Route::get('/member-preferences/options', [MemberPreferenceController::class, 'options'])
+                ->middleware('permission:members.view');
+            Route::get('/members/{member}/preferences', [MemberPreferenceController::class, 'index'])
+                ->middleware('permission:members.view');
+            Route::put('/members/{member}/preferences/{project}', [MemberPreferenceController::class, 'update'])
+                ->middleware('permission:members.edit');
+
             Route::get('/members/{member}/nominees', [NomineeController::class, 'index'])
                 ->middleware('permission:nominees.manage');
             Route::post('/members/{member}/nominees', [NomineeController::class, 'store'])

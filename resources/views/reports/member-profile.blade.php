@@ -330,6 +330,68 @@
     @endforelse
 
     {{--
+        THE HOUSING QUESTIONNAIRE - the legacy's fourth section.
+
+        ONLY THE PROJECTS THE MEMBER ANSWERED. Three empty blocks on 297 of 315
+        profiles would be three blocks nobody reads, and this is a housing
+        cooperative: it is the section that matters most on the eighteen where
+        it says something.
+    --}}
+    @if (count($preferences) > 0)
+        <h2>What this member wants from the association's housing</h2>
+
+        <table class="slots">
+            <thead>
+                <tr>
+                    <th>Project</th>
+                    <th>Where</th>
+                    <th>Size</th>
+                    <th>Budget</th>
+                    <th>Loan</th>
+                    <th>Flats</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach ($preferences as $preference)
+                    <tr>
+                        <td>{{ \App\Models\Tenant\MemberPreference::PROJECTS[$preference->project] }}</td>
+                        <td>{{ $preference->areas ? implode(', ', $preference->areas) : '—' }}</td>
+                        {{-- A number with its unit, because the column is a
+                             number: the legacy stored "1,500 sft" and "1500 Sft"
+                             as different sizes. --}}
+                        <td>{{ $preference->flat_size_sft ? $preference->flat_size_sft.' sft' : '—' }}</td>
+                        <td>
+                            {{ $preference->budget
+                                ? \App\Models\Tenant\MemberPreference::BUDGETS[$preference->budget]
+                                : '—' }}
+                        </td>
+                        {{-- 0 is an answer - "no loan" - and a dash is not. --}}
+                        <td>{{ $preference->loan_percentage === null ? '—' : $preference->loan_percentage.'%' }}</td>
+                        <td>{{ $show($preference->flats_wanted) }}</td>
+                    </tr>
+                @endforeach
+            </tbody>
+        </table>
+
+        @foreach ($preferences as $preference)
+            @php
+                $named = $preference->introduced_by_member_id !== null
+                    ? $preference->introducedBy?->name
+                    : $preference->introduced_by_name;
+            @endphp
+
+            @if ($named)
+                <table class="fields">
+                    <tr>
+                        <td class="label">Told about {{ strtolower(\App\Models\Tenant\MemberPreference::PROJECTS[$preference->project]) }} by</td>
+                        <td>{{ $named }}</td>
+                    </tr>
+                </table>
+            @endif
+        @endforeach
+    @endif
+
+    {{--
         WHAT IS ON FILE - every slot, filled or not.
 
         New here; the legacy profile says nothing about documents. "Which

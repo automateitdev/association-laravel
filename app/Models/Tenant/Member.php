@@ -79,6 +79,17 @@ class Member extends Authenticatable
     }
 
     /**
+     * What this member wants from the association's housing.
+     *
+     * Up to three rows, one per project - and a member who has answered
+     * nothing has none, deliberately. See MemberPreference::isAnswered().
+     */
+    public function preferences(): HasMany
+    {
+        return $this->hasMany(MemberPreference::class);
+    }
+
+    /**
      * The member who brought this one in, when they are a member themselves.
      *
      * Null for somebody introduced by a person who never joined - see

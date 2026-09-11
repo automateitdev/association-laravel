@@ -385,6 +385,50 @@ class MemberProfilePdfTest extends TenantTestCase
         });
     }
 
+    /**
+     * The housing questionnaire - the legacy's fourth section, and only when
+     * the member has actually answered it.
+     *
+     * Three empty blocks on 297 of 315 profiles would be three blocks nobody
+     * reads. This is a housing cooperative: the section matters most on the
+     * eighteen members where it says something.
+     */
+    public function test_it_prints_the_housing_answers_a_member_gave(): void
+    {
+        $this->inTenant(function () {
+            $member = $this->member();
+
+            // Nothing answered: the section is absent entirely.
+            self::assertStringNotContainsString(
+                "association's housing",
+                $this->html($member),
+            );
+
+            \App\Models\Tenant\MemberPreference::create([
+                'member_id' => $member->id,
+                'project' => 'other_district',
+                'areas' => ['Chattogram'],
+                'flat_size_sft' => 1800,
+                'budget' => '25-35',
+                'loan_percentage' => 0,
+                'flats_wanted' => 1,
+            ]);
+
+            $html = $this->html($member->fresh());
+
+            self::assertStringContainsString("association's housing", $html);
+            self::assertStringContainsString('Another district', $html);
+            self::assertStringContainsString('Chattogram', $html);
+
+            // A number with its unit, because the column IS a number - the
+            // legacy stored "1,500 sft" and "1500 Sft" as different sizes.
+            self::assertStringContainsString('1800 sft', $html);
+
+            // 0 is an answer - "no loan" - and must not print as a dash.
+            self::assertStringContainsString('0%', $html);
+        });
+    }
+
     // ----------------------------------------------------------- photographs
 
     /**

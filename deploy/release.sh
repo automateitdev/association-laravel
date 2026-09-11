@@ -69,6 +69,17 @@ php artisan migrate --force
 # than all at once.
 php artisan tenants:migrate --force
 
+# The catalogue, after the schema and for the same reason: a release that adds
+# a permission adds it to TenantSeedService, which otherwise runs only at
+# provisioning - so every association created before today would be refused the
+# route behind it, superadmin included.
+#
+# --permissions-only, deliberately. A deploy has no business creating ledgers or
+# settings in books somebody has been editing for two years, even by
+# firstOrCreate. Additive: an association's own role changes are never
+# overruled. Does nothing when the catalogue has not moved.
+php artisan tenants:reseed --permissions-only
+
 trap - ERR
 
 # ----------------------------------------------------------------------- cache

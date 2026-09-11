@@ -109,12 +109,38 @@ class TenantSeedTest extends TenantTestCase
 
             $before = Permission::count();
 
+            // And one the association took AWAY from a seeded role.
+            Role::findByName('admin', 'web')->revokePermissionTo('members.suspend');
+
             app(TenantSeedService::class)->seedAll();
 
             $this->assertSame($before, Permission::count(), 'Re-seeding must not drop permissions.');
             $this->assertTrue(
                 Permission::where('name', 'custom.local-report')->exists(),
                 'A hand-added permission must survive a re-seed.'
+            );
+
+            /*
+             * THE GRANT, NOT ONLY THE ROW - and this is the assertion that was
+             * missing.
+             *
+             * This test has been named "additive and loses nothing" since it
+             * was written, and checked only that the permission ROW survived.
+             * The service was calling `syncPermissions`, which replaces a
+             * role's permissions with exactly the list given, so every re-seed
+             * stripped whatever an association had added to `operator` - whose
+             * own comment in the seeder invites them to widen it - and put back
+             * whatever they had removed from `admin`. The row survived either
+             * way, so nothing ever failed.
+             */
+            $this->assertTrue(
+                Role::findByName('operator', 'web')->hasPermissionTo('custom.local-report'),
+                'A permission the association granted to a role must survive a re-seed.'
+            );
+
+            $this->assertFalse(
+                Role::findByName('admin', 'web')->hasPermissionTo('members.suspend'),
+                'A permission the association removed must not be handed back.'
             );
         });
     }

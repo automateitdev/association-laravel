@@ -108,16 +108,17 @@ class TenantSeedService
     }
 
     /**
-     * A default chart derived from COCSOL's, editable afterwards (A-3).
+     * The default chart, as data.
      *
-     * Note that instalment income and fine income are SEPARATE ledgers from the
-     * outset. That separation is the accounting half of ADR-0005 - if a new
-     * association starts with one combined income account, the platform has
-     * already lost the distinction it exists to keep.
+     * Its own method because `tenants:seed --dry-run` has to say what it would
+     * ADD without adding it, and a structure declared inside the method that
+     * writes it cannot be read by anything else.
+     *
+     * @return array<string, array{type: string, groups: array<string, list<string>>}>
      */
-    public function seedChartOfAccounts(): void
+    public static function chartStructure(): array
     {
-        $structure = [
+        return [
             'Assets' => ['type' => 'asset', 'groups' => [
                 'Cash and Bank' => ['Cash in Hand', 'Bank Account'],
                 'Receivables' => ['Subscriptions Receivable'],
@@ -136,8 +137,19 @@ class TenantSeedService
                 'Administrative' => ['Office Expenses', 'Bank Charges'],
             ]],
         ];
+    }
 
-        foreach ($structure as $categoryName => $spec) {
+    /**
+     * A default chart derived from COCSOL's, editable afterwards (A-3).
+     *
+     * Note that instalment income and fine income are SEPARATE ledgers from the
+     * outset. That separation is the accounting half of ADR-0005 - if a new
+     * association starts with one combined income account, the platform has
+     * already lost the distinction it exists to keep.
+     */
+    public function seedChartOfAccounts(): void
+    {
+        foreach (self::chartStructure() as $categoryName => $spec) {
             $category = AccountCategory::query()->firstOrCreate(
                 ['name' => $categoryName],
                 ['type' => $spec['type']]
@@ -160,38 +172,172 @@ class TenantSeedService
     }
 
     /**
-     * Additive and idempotent (FR-RBAC-3).
+     * What a seed run would ADD to this association, without adding it.
      *
-     * The legacy seeder deletes the entire permissions table before rebuilding
-     * it, so any permission granted by hand is lost and it is unsafe to run
-     * against live data (defect D-11). Nothing here deletes anything.
+     * Every write in this service is `findOrCreate`, so "what is missing" is
+     * the whole of what a run would do. Reported per kind because the three
+     * mean different things on a deploy: a missing permission is a release
+     * nobody applied, a missing ledger is a chart somebody edited, and a
+     * missing setting is neither - it is a default that did not exist when the
+     * association was provisioned.
+     *
+     * @return array{permissions: list<string>, settings: list<string>, ledgers: list<string>}
      */
-    public function seedRolesAndPermissions(): void
+    public function pending(): array
     {
-        $all = [];
+        $settings = [];
 
-        foreach (self::permissionCatalogue() as $group => $permissions) {
-            foreach ($permissions as $name) {
-                Permission::findOrCreate($name, self::GUARD);
-                $all[] = $name;
+        foreach (array_keys(Setting::defaults()) as $key) {
+            if (! Setting::query()->where('key', $key)->exists()) {
+                $settings[] = $key;
             }
         }
 
-        $superadmin = Role::findOrCreate('superadmin', self::GUARD);
-        $admin = Role::findOrCreate('admin', self::GUARD);
-        $operator = Role::findOrCreate('operator', self::GUARD);
+        $ledgers = [];
+        $held = Ledger::query()->pluck('name')->all();
 
-        // Everything, always - including permissions added by a later release.
-        $superadmin->syncPermissions($all);
+        foreach (self::chartStructure() as $spec) {
+            foreach ($spec['groups'] as $names) {
+                foreach ($names as $name) {
+                    /*
+                     * By NAME, not by group. The real seeder keys on the group
+                     * too, so an association that moved `Bank Account` to a
+                     * group of their own would have it created again - which is
+                     * a pre-existing wrinkle in `seedChartOfAccounts`, not
+                     * something this report should invent a second answer to.
+                     * Naming it here so the difference is known rather than
+                     * discovered.
+                     */
+                    if (! in_array($name, $held, true)) {
+                        $ledgers[] = $name;
+                    }
+                }
+            }
+        }
+
+        return [
+            'permissions' => $this->missingPermissions(),
+            'settings' => $settings,
+            'ledgers' => $ledgers,
+        ];
+    }
+
+    /** The roles every association starts with. */
+    public const ROLES = ['superadmin', 'admin', 'operator'];
+
+    /**
+     * The operator role: the legacy operator, and deliberately narrow.
+     *
+     * Associations widen it themselves if they want to - which is precisely
+     * why nothing here may write it back over their choice.
+     *
+     * @var list<string>
+     */
+    private const OPERATOR = ['dashboard.view', 'shares.view', 'shares.transfer'];
+
+    /**
+     * Which seeded roles a permission belongs to, ON THE DAY IT IS CREATED.
+     *
+     * ONE STATEMENT OF THE RULE, because it has two callers: provisioning, and
+     * `tenants:seed`, which brings an association created before a release up
+     * to date with it. Two copies would drift, and the way anybody would find
+     * out is an association whose admins silently cannot reach a feature every
+     * other association has.
+     *
+     * @return list<string>
+     */
+    public static function rolesHolding(string $permission): array
+    {
+        $roles = ['superadmin'];
 
         // Operational, minus role and user administration.
-        $admin->syncPermissions(array_values(array_filter(
-            $all,
-            fn (string $p) => ! str_starts_with($p, 'roles.') && ! str_starts_with($p, 'users.')
-        )));
+        if (! str_starts_with($permission, 'roles.') && ! str_starts_with($permission, 'users.')) {
+            $roles[] = 'admin';
+        }
 
-        // Matches the legacy operator: dashboard and share transfer only.
-        // Deliberately narrow; associations widen it themselves if they want to.
-        $operator->syncPermissions(['dashboard.view', 'shares.view', 'shares.transfer']);
+        if (in_array($permission, self::OPERATOR, true)) {
+            $roles[] = 'operator';
+        }
+
+        return $roles;
+    }
+
+    /**
+     * Permissions in the catalogue this association does not have yet.
+     *
+     * Reads nothing else and writes nothing at all, so `tenants:seed --dry-run`
+     * cannot change what it is describing.
+     *
+     * @return list<string>
+     */
+    public function missingPermissions(): array
+    {
+        $held = Permission::query()
+            ->where('guard_name', self::GUARD)
+            ->pluck('name')
+            ->all();
+
+        $missing = [];
+
+        foreach (self::permissionCatalogue() as $permissions) {
+            foreach ($permissions as $name) {
+                if (! in_array($name, $held, true)) {
+                    $missing[] = $name;
+                }
+            }
+        }
+
+        return $missing;
+    }
+
+    /**
+     * Bring the permission catalogue up to date. ADDITIVE, AND ONLY ADDITIVE.
+     *
+     * A PERMISSION IS GRANTED TO A ROLE ONLY IN THE RUN THAT CREATES IT, which
+     * is the whole of the policy and the reason this is safe against live data.
+     * A permission that already exists in the association's database is one the
+     * association has had the chance to think about: if their admins do not
+     * hold `members.suspend`, somebody took it away on purpose, and a deploy
+     * that quietly hands it back has overruled them.
+     *
+     * So "what a release added" is read as "what has no row here yet", and
+     * nothing else is touched.
+     *
+     * THIS USED TO CALL syncPermissions, which is not additive at all - it
+     * replaces a role's permissions with exactly the list given. Re-running it
+     * put back every permission an association had removed from `admin`, and
+     * stripped every one they had ADDED to `operator`, whose own comment
+     * invites them to widen it. The docblock above this method claimed
+     * additivity throughout, and the test named for it only checked that the
+     * permission ROW survived - not the grant - so nothing ever failed.
+     *
+     * The cost of the change: a permission dropped from the catalogue in a
+     * later release stays granted rather than being swept up. Harmless, because
+     * no route consults it, and far cheaper than the alternative.
+     *
+     * @return array{created: list<string>, granted: array<string, list<string>>}
+     */
+    public function seedRolesAndPermissions(): array
+    {
+        $roles = [];
+
+        foreach (self::ROLES as $name) {
+            $roles[$name] = Role::findOrCreate($name, self::GUARD);
+        }
+
+        $created = [];
+        $granted = array_fill_keys(self::ROLES, []);
+
+        foreach ($this->missingPermissions() as $name) {
+            $permission = Permission::findOrCreate($name, self::GUARD);
+            $created[] = $name;
+
+            foreach (self::rolesHolding($name) as $role) {
+                $roles[$role]->givePermissionTo($permission);
+                $granted[$role][] = $name;
+            }
+        }
+
+        return ['created' => $created, 'granted' => $granted];
     }
 }

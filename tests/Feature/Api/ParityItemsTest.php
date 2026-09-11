@@ -382,6 +382,100 @@ class ParityItemsTest extends TenantTestCase
         $this->assertSame(0, $this->inTenant(fn () => Nominee::count()));
     }
 
+    /**
+     * The four identity fields the schema had nowhere to put.
+     *
+     * Not a feature gap - the nominee endpoints existed and worked - which is
+     * why nothing caught it. A column sweep against the legacy did: every one
+     * of the association's 315 nominees carries a father's name, a mother's
+     * name and a gender, and 301 carry a profession, and all four would have
+     * arrived empty. See bcs-docs/12-legacy-sweep.md.
+     *
+     * A person is identified here by their parents' names as much as their own,
+     * which is what makes this identity rather than decoration: two nominees
+     * called Rahima Begum are told apart by them, in front of a bank.
+     */
+    public function test_a_nominee_carries_the_identity_fields_the_legacy_holds(): void
+    {
+        $token = $this->staffToken();
+        $memberId = $this->inTenant(fn () => $this->makeMember()->id);
+
+        $id = $this->postJson(
+            "/api/v1/staff/members/{$memberId}/nominees",
+            [
+                'name' => 'Rahima Begum',
+                'relation' => 'Spouse',
+                'father_name' => 'Abdul Karim',
+                'mother_name' => 'Nasima Khatun',
+                'gender' => 'female',
+                'profession' => 'Lecturer, Noakhali Science & Technology University',
+            ],
+            $this->headers($token),
+        )
+            ->assertCreated()
+            ->assertJsonPath('data.father_name', 'Abdul Karim')
+            ->assertJsonPath('data.mother_name', 'Nasima Khatun')
+            ->assertJsonPath('data.gender', 'female')
+            ->assertJsonPath('data.profession', 'Lecturer, Noakhali Science & Technology University')
+            ->json('data.id');
+
+        // They survive a round trip rather than only echoing the request back.
+        $this->getJson("/api/v1/staff/members/{$memberId}/nominees", $this->headers($token))
+            ->assertOk()
+            ->assertJsonPath('data.0.father_name', 'Abdul Karim')
+            ->assertJsonPath('data.0.gender', 'female');
+
+        $this->putJson(
+            "/api/v1/staff/nominees/{$id}",
+            ['mother_name' => 'Nasima Begum'],
+            $this->headers($token),
+        )
+            ->assertOk()
+            ->assertJsonPath('data.mother_name', 'Nasima Begum')
+            // Untouched by a partial update.
+            ->assertJsonPath('data.father_name', 'Abdul Karim');
+    }
+
+    /**
+     * Optional, though universal in the data.
+     *
+     * A nominee added at the counter while the member is standing there without
+     * their in-laws' names must still save. The office fills them in later.
+     */
+    public function test_the_identity_fields_are_optional(): void
+    {
+        $token = $this->staffToken();
+        $memberId = $this->inTenant(fn () => $this->makeMember()->id);
+
+        $this->postJson(
+            "/api/v1/staff/members/{$memberId}/nominees",
+            ['name' => 'Only A Name'],
+            $this->headers($token),
+        )
+            ->assertCreated()
+            ->assertJsonPath('data.father_name', null)
+            ->assertJsonPath('data.gender', null);
+    }
+
+    /** The same vocabulary as a member's, not the two values the data happens to hold. */
+    public function test_a_nominee_gender_must_be_one_the_members_table_could_hold(): void
+    {
+        $token = $this->staffToken();
+        $memberId = $this->inTenant(fn () => $this->makeMember()->id);
+
+        $this->postJson(
+            "/api/v1/staff/members/{$memberId}/nominees",
+            ['name' => 'Someone', 'gender' => 'Male'],
+            $this->headers($token),
+        )->assertStatus(422);
+
+        $this->postJson(
+            "/api/v1/staff/members/{$memberId}/nominees",
+            ['name' => 'Someone', 'gender' => 'other'],
+            $this->headers($token),
+        )->assertCreated();
+    }
+
     /** A split adding up to 130% is a dispute, not a split. */
     public function test_nominee_shares_cannot_exceed_one_hundred_percent(): void
     {

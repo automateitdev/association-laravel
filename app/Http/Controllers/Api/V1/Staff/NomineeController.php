@@ -110,10 +110,26 @@ class NomineeController extends Controller
         return $request->validate([
             'name' => [$required, 'string', 'max:255'],
             'relation' => ['sometimes', 'nullable', 'string', 'max:255'],
+
+            /*
+             * Optional here, universal in the data. All 315 nominees in the
+             * association carry a father's and a mother's name, but a nominee
+             * being added today should not be refused because the member is
+             * standing at the counter without them - the office can fill them
+             * in when it has them.
+             */
+            'father_name' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'mother_name' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'gender' => ['sometimes', 'nullable', 'in:male,female,other'],
+
             'birth_date' => ['sometimes', 'nullable', 'date', 'before:today'],
             'nid' => ['sometimes', 'nullable', 'string', 'max:50'],
             'mobile' => ['sometimes', 'nullable', 'string', 'max:20'],
             'address' => ['sometimes', 'nullable', 'string', 'max:2000'],
+
+            // A job and a workplace together, which is how the legacy data
+            // reads: "Lecturer, Noakhali Science & Technology University".
+            'profession' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'share_percentage' => ['sometimes', 'nullable', 'numeric', 'min:0', 'max:100'],
         ]);
     }
@@ -188,10 +204,14 @@ class NomineeController extends Controller
             'member_id' => $n->member_id,
             'name' => $n->name,
             'relation' => $n->relation,
+            'father_name' => $n->father_name,
+            'mother_name' => $n->mother_name,
+            'gender' => $n->gender,
             'birth_date' => $n->birth_date?->toDateString(),
             'nid' => $n->nid,
             'mobile' => $n->mobile,
             'address' => $n->address,
+            'profession' => $n->profession,
 
             // A string, like every other figure the app displays, so nothing
             // downstream is tempted to do arithmetic on it.

@@ -27,10 +27,21 @@ class Nominee extends Model
         'member_id',
         'name',
         'relation',
+
+        /*
+         * A person is identified by their parents' names here, not only by
+         * their own. Two nominees called Rahima Begum are told apart by these,
+         * and the association may have to do exactly that in front of a bank.
+         */
+        'father_name',
+        'mother_name',
+        'gender',
+
         'birth_date',
         'nid',
         'mobile',
         'address',
+        'profession',
         'image',
         'share_percentage',
     ];

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models\Tenant;
 
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
@@ -31,6 +32,7 @@ class Member extends Authenticatable
         'mobile', 'email', 'password',
         'nid', 'present_address', 'permanent_address', 'office_address',
         'emergency_contact',
+        'introduced_by_member_id', 'introduced_by_name',
         'image', 'nid_front', 'nid_back', 'signature',
         'proof_joining_cadre', 'proof_signed_by_sup_author',
         'status', 'created_by', 'updated_by',
@@ -56,6 +58,30 @@ class Member extends Authenticatable
     public function nominees(): HasMany
     {
         return $this->hasMany(Nominee::class);
+    }
+
+    /**
+     * The member who brought this one in, when they are a member themselves.
+     *
+     * Null for somebody introduced by a person who never joined - see
+     * `introduced_by_name`, which is the only record in that case.
+     */
+    public function introducedBy(): BelongsTo
+    {
+        return $this->belongsTo(Member::class, 'introduced_by_member_id');
+    }
+
+    /**
+     * Everybody this member has brought in.
+     *
+     * The question the legacy's three text columns could not answer. In the
+     * association's own data eleven members introduced 63 between them, which
+     * is a fifth of the register and worth being able to see from a member's
+     * own page.
+     */
+    public function introduced(): HasMany
+    {
+        return $this->hasMany(Member::class, 'introduced_by_member_id');
     }
 
     public function feeAssigns(): HasMany

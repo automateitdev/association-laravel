@@ -267,6 +267,31 @@ class MemberController extends Controller
             'father_name' => ['sometimes', 'nullable', 'string', 'max:255'],
             'present_address' => ['sometimes', 'nullable', 'string'],
             'permanent_address' => ['sometimes', 'nullable', 'string'],
+
+            /*
+             * WHO INTRODUCED THEM, as a link where that is possible.
+             *
+             * A member cannot introduce themselves, which is the one rule worth
+             * enforcing: it is a data-entry slip rather than a decision, and a
+             * member whose introducer is themselves reads on the screen as a
+             * circle nobody can explain.
+             *
+             * The name is the fallback for an introducer who is not a member -
+             * the association has one such row today - and is ignored by the
+             * screen whenever the link is set, so the two cannot disagree.
+             */
+            'introduced_by_member_id' => [
+                'sometimes',
+                'nullable',
+                'integer',
+                'exists:members,id',
+
+                // `not_in` rather than `different`, which compares two REQUEST
+                // fields - and the member's own id arrives in the route, not
+                // the body, so `different:id` would never fire.
+                'not_in:'.$record->id,
+            ],
+            'introduced_by_name' => ['sometimes', 'nullable', 'string', 'max:255'],
         ]);
 
         $before = $this->shape($record);
@@ -390,7 +415,9 @@ class MemberController extends Controller
 
     private function find(int $id): Member
     {
-        return Member::query()->with('associatorInfo')->find($id)
+        // `introducedBy.associatorInfo` so the detail shape can name the
+        // introducer and their membership number without two more queries.
+        return Member::query()->with(['associatorInfo', 'introducedBy.associatorInfo'])->find($id)
             ?? throw ApiException::notFound('Member');
     }
 
@@ -438,6 +465,32 @@ class MemberController extends Controller
                 'nid' => $member->nid,
                 'present_address' => $member->present_address,
                 'permanent_address' => $member->permanent_address,
+
+                /*
+                 * The introducer, resolved. When the link is set the name comes
+                 * from that member's own record rather than from a copy taken
+                 * when the form was filled in - which is what stops "Md. Riaz
+                 * uddin" and "Md. Riaz Uddin" being two people.
+                 */
+                'introduced_by' => $member->introduced_by_member_id === null
+                    ? ($member->introduced_by_name === null ? null : [
+                        'member_id' => null,
+                        'name' => $member->introduced_by_name,
+                        'membership_no' => null,
+                    ])
+                    : [
+                        'member_id' => $member->introduced_by_member_id,
+                        'name' => $member->introducedBy?->name,
+                        'membership_no' => $member->introducedBy?->associatorInfo?->membership_no,
+                    ],
+
+                /*
+                 * And the other direction, which three text columns could not
+                 * answer at all. A count rather than the list: eleven members
+                 * account for a fifth of this register, and the ones who matter
+                 * are worth a number on the page before anybody opens a report.
+                 */
+                'introduced_count' => $member->introduced()->count(),
             ];
         }
 

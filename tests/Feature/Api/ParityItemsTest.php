@@ -8,6 +8,7 @@ use App\Models\Tenant\AccountGroup;
 use App\Models\Tenant\FeeAssign;
 use App\Models\Tenant\Ledger;
 use App\Models\Tenant\LedgerTrace;
+use App\Models\Tenant\Member;
 use App\Models\Tenant\Nominee;
 use App\Models\Tenant\PaymentInfo;
 use App\Models\Tenant\PaymentInfoItem;
@@ -353,6 +354,98 @@ class ParityItemsTest extends TenantTestCase
             ['membership_no' => '200'],
             $this->headers($this->tokenWithPermissions(['members.view', 'associator.edit'])),
         )->assertOk();
+    }
+
+    // ---------------------------------------------------------- introducer
+
+    /**
+     * Who introduced a member, as a LINK rather than three copies of a name.
+     *
+     * The legacy keeps ref_name, ref_mobile and ref_memeber_id_no beside each
+     * member. 63 members carry an introducer and there are 11 distinct
+     * introducers between them, so the same person is typed out up to thirteen
+     * times - and already appears as both "Md. Riaz uddin" and "Md. Riaz
+     * Uddin", with their mobile in three different formats.
+     *
+     * 58 of the 63 ids match a membership number outright; of the five that do
+     * not, two have the mobile and the number swapped and two are the right
+     * number unpadded. So this is a member, and a foreign key is the honest
+     * shape - which also answers what the text columns could not: who has this
+     * member introduced?
+     */
+    public function test_an_introducer_is_a_link_and_resolves_to_that_member(): void
+    {
+        $token = $this->staffToken();
+
+        [$introducerId, $memberId] = $this->inTenant(function () {
+            $introducer = $this->makeMember(['name' => 'Tofayel Ahamed']);
+            $introducer->associatorInfo()->create(['membership_no' => 'M-015']);
+
+            return [$introducer->id, $this->makeMember(['name' => 'New Joiner'])->id];
+        });
+
+        $this->putJson(
+            "/api/v1/staff/members/{$memberId}",
+            ['introduced_by_member_id' => $introducerId],
+            $this->headers($token),
+        )->assertOk();
+
+        // The name comes from the introducer's own record, not from a copy.
+        $this->getJson("/api/v1/staff/members/{$memberId}", $this->headers($token))
+            ->assertOk()
+            ->assertJsonPath('data.introduced_by.member_id', $introducerId)
+            ->assertJsonPath('data.introduced_by.name', 'Tofayel Ahamed')
+            ->assertJsonPath('data.introduced_by.membership_no', 'M-015');
+
+        // Renaming the introducer changes what every member they introduced
+        // shows, which is the whole point of not copying it.
+        $this->inTenant(fn () => Member::where('id', $introducerId)->update(['name' => 'Tofayel Ahmed']));
+
+        $this->getJson("/api/v1/staff/members/{$memberId}", $this->headers($token))
+            ->assertOk()
+            ->assertJsonPath('data.introduced_by.name', 'Tofayel Ahmed');
+
+        // And the other direction, which three text columns could not answer.
+        $this->getJson("/api/v1/staff/members/{$introducerId}", $this->headers($token))
+            ->assertOk()
+            ->assertJsonPath('data.introduced_count', 1)
+            ->assertJsonPath('data.introduced_by', null);
+    }
+
+    /** An introducer who never joined: the name is all there is. */
+    public function test_an_introducer_who_is_not_a_member_is_kept_by_name(): void
+    {
+        $token = $this->staffToken();
+        $memberId = $this->inTenant(fn () => $this->makeMember()->id);
+
+        $this->putJson(
+            "/api/v1/staff/members/{$memberId}",
+            ['introduced_by_name' => 'Md. Abdullahil Kafi'],
+            $this->headers($token),
+        )->assertOk();
+
+        $this->getJson("/api/v1/staff/members/{$memberId}", $this->headers($token))
+            ->assertOk()
+            ->assertJsonPath('data.introduced_by.member_id', null)
+            ->assertJsonPath('data.introduced_by.name', 'Md. Abdullahil Kafi');
+    }
+
+    /**
+     * Nobody introduces themselves.
+     *
+     * A data-entry slip rather than a decision, and a member whose introducer
+     * is themselves reads on screen as a circle nobody can explain.
+     */
+    public function test_a_member_cannot_introduce_themselves(): void
+    {
+        $token = $this->staffToken();
+        $memberId = $this->inTenant(fn () => $this->makeMember()->id);
+
+        $this->putJson(
+            "/api/v1/staff/members/{$memberId}",
+            ['introduced_by_member_id' => $memberId],
+            $this->headers($token),
+        )->assertStatus(422);
     }
 
     // ------------------------------------------------------------ nominees

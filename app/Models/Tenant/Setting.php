@@ -49,6 +49,44 @@ class Setting extends Model
     /** Free text shown under the account details, e.g. a reference to quote. */
     public const BANK_INSTRUCTIONS = 'bank.instructions';
 
+    /*
+     * WHO THE ASSOCIATION IS, on anything it prints.
+     *
+     * The legacy certificate and ID card blades hardcode all of this -
+     * "Cadre Officers' Co-operative society limited (COCSOL)", registration
+     * 01/2023 dated 23/02/23, cocsol2022@gmail.com, an authorised capital of
+     * one crore in ten thousand shares, and a return address in Ibrahimpur.
+     * A second association printing from that template would hand its members
+     * a card belonging to somebody else.
+     *
+     * So they are settings, and they are seeded EMPTY. A blank line on a
+     * certificate is a question the association can answer; a wrong
+     * registration number is one nobody will think to ask.
+     */
+    public const SOCIETY_NAME = 'society.name';
+
+    public const SOCIETY_REGISTRATION_NO = 'society.registration_no';
+
+    public const SOCIETY_REGISTERED_ON = 'society.registered_on';
+
+    public const SOCIETY_ADDRESS = 'society.address';
+
+    public const SOCIETY_EMAIL = 'society.email';
+
+    public const SOCIETY_WEBSITE = 'society.website';
+
+    /**
+     * The authorised capital and how it is divided, as they appear on a share
+     * certificate - which is a legal statement about the society, not a figure
+     * derived from what members happen to have paid.
+     */
+    public const SOCIETY_AUTHORISED_CAPITAL = 'society.authorised_capital';
+
+    public const SOCIETY_TOTAL_SHARES = 'society.total_shares';
+
+    /** What one share is worth. The legacy prints `1000/-`, hardcoded. */
+    public const SOCIETY_SHARE_VALUE = 'society.share_value';
+
     /** Whether members may start an online payment at all. */
     public const ONLINE_PAYMENT_ENABLED = 'payment.online_enabled';
 
@@ -85,6 +123,23 @@ class Setting extends Model
             self::BANK_BRANCH => ['value' => '', 'group' => 'bank'],
             self::BANK_ROUTING_NUMBER => ['value' => '', 'group' => 'bank'],
             self::BANK_INSTRUCTIONS => ['value' => '', 'group' => 'bank'],
+
+            /*
+             * Empty until the association fills them in, like the bank details
+             * above and for a sharper reason: these are printed on documents a
+             * member keeps. A blank is a question somebody can answer; a
+             * plausible-looking default belonging to another association is a
+             * wrong answer nobody thinks to check.
+             */
+            self::SOCIETY_NAME => ['value' => '', 'group' => 'society'],
+            self::SOCIETY_REGISTRATION_NO => ['value' => '', 'group' => 'society'],
+            self::SOCIETY_REGISTERED_ON => ['value' => '', 'group' => 'society'],
+            self::SOCIETY_ADDRESS => ['value' => '', 'group' => 'society'],
+            self::SOCIETY_EMAIL => ['value' => '', 'group' => 'society'],
+            self::SOCIETY_WEBSITE => ['value' => '', 'group' => 'society'],
+            self::SOCIETY_AUTHORISED_CAPITAL => ['value' => '', 'group' => 'society'],
+            self::SOCIETY_TOTAL_SHARES => ['value' => '', 'group' => 'society'],
+            self::SOCIETY_SHARE_VALUE => ['value' => '', 'group' => 'society'],
 
             // Off until an association configures a gateway and turns it on.
             self::ONLINE_PAYMENT_ENABLED => ['value' => false, 'group' => 'payment'],

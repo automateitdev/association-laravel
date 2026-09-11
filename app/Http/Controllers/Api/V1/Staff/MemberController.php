@@ -11,6 +11,7 @@ use App\Models\Tenant\AuditLog;
 use App\Models\Tenant\Member;
 use App\Reports\Column;
 use App\Reports\ExportsListings;
+use App\Reports\MemberDocumentRenderer;
 use App\Reports\MemberProfileRenderer;
 use App\Reports\Report;
 use Illuminate\Http\JsonResponse;
@@ -139,6 +140,40 @@ class MemberController extends Controller
     public function profile(int $member, MemberProfileRenderer $renderer): Response
     {
         return $renderer->render($this->find($member), $this->associationName());
+    }
+
+    /**
+     * Share certificates or ID cards, for the members chosen (legacy
+     * `certificate`, `id-card`).
+     *
+     * A BATCH, which is how an office prints them and the one thing about the
+     * legacy screen worth keeping: it lists members, you tick some, you get one
+     * file. Printing forty cards one at a time is not a workflow.
+     *
+     * The same two permissions as every other download. See
+     * MemberDocumentRenderer for the five things the legacy version of these
+     * documents gets wrong - starting with being hardcoded to one association.
+     */
+    public function printDocuments(Request $request, MemberDocumentRenderer $renderer): Response
+    {
+        $validated = $request->validate([
+            'type' => ['required', Rule::in(MemberDocumentRenderer::TYPES)],
+
+            /*
+             * Capped, because this is a synchronous render of one page per
+             * member and mPDF is not fast. 200 certificates is already most of
+             * a minute; the limit is what turns "the download failed" into a
+             * sentence somebody can act on.
+             */
+            'member_ids' => ['required', 'array', 'min:1', 'max:200'],
+            'member_ids.*' => ['integer'],
+        ]);
+
+        try {
+            return $renderer->render($validated['member_ids'], $validated['type']);
+        } catch (\DomainException $e) {
+            throw new ApiException('CANNOT_PRINT', $e->getMessage(), 422);
+        }
     }
 
     /**

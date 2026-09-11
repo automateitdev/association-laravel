@@ -42,6 +42,14 @@ class SettingsController extends Controller
                 'bank' => $this->bankDetails(),
 
                 /*
+                 * Who the association is, on anything it prints. The legacy
+                 * hardcodes all of this into the certificate and ID card
+                 * templates, so a second association printing from them would
+                 * hand its members a card belonging to COCSOL.
+                 */
+                'society' => $this->societyDetails(),
+
+                /*
                  * READ-ONLY, and not merely because the credentials are secret.
                  *
                  * The gateway is set by whoever provisions the association
@@ -78,6 +86,23 @@ class SettingsController extends Controller
             'bank.branch' => ['sometimes', 'nullable', 'string', 'max:255'],
             'bank.routing_number' => ['sometimes', 'nullable', 'string', 'max:50'],
             'bank.instructions' => ['sometimes', 'nullable', 'string', 'max:2000'],
+
+            'society.name' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'society.registration_no' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'society.registered_on' => ['sometimes', 'nullable', 'date'],
+            'society.address' => ['sometimes', 'nullable', 'string', 'max:500'],
+            'society.email' => ['sometimes', 'nullable', 'email', 'max:255'],
+            'society.website' => ['sometimes', 'nullable', 'string', 'max:255'],
+
+            /*
+             * Money as a STRING with a numeric rule, never a float. These are
+             * printed on a share certificate, which is a legal statement about
+             * the society - an authorised capital that has drifted by a paisa
+             * through a float is a document nobody can rely on.
+             */
+            'society.authorised_capital' => ['sometimes', 'nullable', 'numeric', 'min:0'],
+            'society.total_shares' => ['sometimes', 'nullable', 'integer', 'min:0'],
+            'society.share_value' => ['sometimes', 'nullable', 'numeric', 'min:0'],
         ]);
 
         $before = [];
@@ -115,6 +140,21 @@ class SettingsController extends Controller
         ]);
 
         return $this->index();
+    }
+
+    private function societyDetails(): array
+    {
+        return [
+            'name' => Setting::get(Setting::SOCIETY_NAME),
+            'registration_no' => Setting::get(Setting::SOCIETY_REGISTRATION_NO),
+            'registered_on' => Setting::get(Setting::SOCIETY_REGISTERED_ON),
+            'address' => Setting::get(Setting::SOCIETY_ADDRESS),
+            'email' => Setting::get(Setting::SOCIETY_EMAIL),
+            'website' => Setting::get(Setting::SOCIETY_WEBSITE),
+            'authorised_capital' => Setting::get(Setting::SOCIETY_AUTHORISED_CAPITAL),
+            'total_shares' => Setting::get(Setting::SOCIETY_TOTAL_SHARES),
+            'share_value' => Setting::get(Setting::SOCIETY_SHARE_VALUE),
+        ];
     }
 
     private function bankDetails(): array

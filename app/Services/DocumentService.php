@@ -7,6 +7,7 @@ namespace App\Services;
 use App\Models\Tenant\Document;
 use App\Models\Tenant\Member;
 use App\Models\Tenant\Nominee;
+use App\Models\Tenant\Signatory;
 use DomainException;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\UploadedFile;
@@ -67,6 +68,21 @@ class DocumentService
         'signature' => 'Signature',
     ];
 
+    /**
+     * What a SIGNATORY holds: one image, the signature itself.
+     *
+     * Through the same machinery as everything else, which is the point. The
+     * legacy stores a bare path in a `file_location` column and writes the file
+     * to `storage/app/public` - so it is the one file in that system whose disk
+     * is not recorded, which makes it the one file that cannot move to a bucket
+     * without a migration nobody has written.
+     *
+     * @var array<string, string>
+     */
+    public const SIGNATORY_SLOTS = [
+        'signature' => 'Signature',
+    ];
+
     /** A phone photograph of an identity card. 5 MB is already generous. */
     public const MAX_BYTES = 5 * 1024 * 1024;
 
@@ -98,6 +114,7 @@ class DocumentService
         return match (true) {
             $owner instanceof Member => self::MEMBER_SLOTS,
             $owner instanceof Nominee => self::NOMINEE_SLOTS,
+            $owner instanceof Signatory => self::SIGNATORY_SLOTS,
             default => throw new DomainException('That record does not carry documents.'),
         };
     }

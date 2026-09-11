@@ -18,6 +18,7 @@ use App\Http\Controllers\Api\V1\Staff\LedgerController;
 use App\Http\Controllers\Api\V1\Staff\MemberController;
 use App\Http\Controllers\Api\V1\Staff\MemberPreferenceController;
 use App\Http\Controllers\Api\V1\Staff\NomineeController;
+use App\Http\Controllers\Api\V1\Staff\SignatoryController;
 use App\Http\Controllers\Api\V1\Staff\PaymentApprovalController;
 use App\Http\Controllers\Api\V1\Staff\ProfileUpdateController;
 use App\Http\Controllers\Api\V1\Staff\ReportController;
@@ -252,6 +253,29 @@ Route::prefix('v1')->group(function () {
             Route::get('/members/{member}/profile', [MemberController::class, 'profile'])
                 ->whereNumber('member')
                 ->middleware(['permission:members.view', 'permission:reports.export']);
+
+            /*
+             * Share certificates and ID cards, for a batch of members (legacy
+             * `certificate`, `id-card`). A POST because the list of members is
+             * the request body - forty ids do not belong in a query string -
+             * and it is still a read: nothing is recorded by printing.
+             */
+            Route::post('/members/print', [MemberController::class, 'printDocuments'])
+                ->middleware(['permission:members.view', 'permission:reports.export']);
+
+            /*
+             * Who signs those documents (legacy `signatures`). Administration,
+             * not member data: whose signature goes on a share certificate is
+             * the committee's business, not the counter's.
+             */
+            Route::get('/signatories', [SignatoryController::class, 'index'])
+                ->middleware('permission:settings.view');
+            Route::put('/signatories/{role}', [SignatoryController::class, 'update'])
+                ->middleware('permission:settings.edit');
+            Route::post('/signatories/{role}/signature', [SignatoryController::class, 'upload'])
+                ->middleware('permission:settings.edit');
+            Route::delete('/signatories/{role}/signature', [SignatoryController::class, 'destroySignature'])
+                ->middleware('permission:settings.edit');
             Route::put('/members/{member}', [MemberController::class, 'update'])
                 ->middleware('permission:members.edit');
 

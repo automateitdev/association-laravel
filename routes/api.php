@@ -238,6 +238,19 @@ Route::prefix('v1')->group(function () {
                 ->middleware('permission:members.create');
             Route::get('/members/{member}', [MemberController::class, 'show'])
                 ->middleware('permission:members.view');
+
+            /*
+             * One member's whole record as a PDF (legacy `member-pdf/{id}`).
+             *
+             * TWO PERMISSIONS, like the listing export above and unlike `show`.
+             * Reading a member on screen and taking their record away as a file
+             * are different acts: the file carries their NID, both addresses
+             * and their nominee's NID, and it outlives the session that made
+             * it. Every download in this API is gated this way.
+             */
+            Route::get('/members/{member}/profile', [MemberController::class, 'profile'])
+                ->whereNumber('member')
+                ->middleware(['permission:members.view', 'permission:reports.export']);
             Route::put('/members/{member}', [MemberController::class, 'update'])
                 ->middleware('permission:members.edit');
 

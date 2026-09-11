@@ -11,6 +11,7 @@ use App\Models\Tenant\AuditLog;
 use App\Models\Tenant\Member;
 use App\Reports\Column;
 use App\Reports\ExportsListings;
+use App\Reports\MemberProfileRenderer;
 use App\Reports\Report;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -119,6 +120,25 @@ class MemberController extends Controller
             ),
             $format,
         );
+    }
+
+    /**
+     * One member's whole record as a PDF (legacy `member-pdf/{id}`).
+     *
+     * NOT AN EXPORT FORMAT. `/members/export` takes `format=` and produces a
+     * listing in one of three; this produces one document in one format,
+     * because a profile is a form rather than a grid of rows. See
+     * MemberProfileRenderer for why it does not go through Report/Column.
+     *
+     * TWO PERMISSIONS, matching the listing export rather than the detail
+     * screen. Reading a member on screen and taking their record away as a file
+     * are different acts: the file carries their NID, both addresses and their
+     * nominee's NID, and it outlives the session that produced it. The pairing
+     * is the same one every download in this API uses.
+     */
+    public function profile(int $member, MemberProfileRenderer $renderer): Response
+    {
+        return $renderer->render($this->find($member), $this->associationName());
     }
 
     /**

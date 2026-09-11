@@ -125,6 +125,13 @@ class NomineeController extends Controller
             'birth_date' => ['sometimes', 'nullable', 'date', 'before:today'],
             'nid' => ['sometimes', 'nullable', 'string', 'max:50'],
             'mobile' => ['sometimes', 'nullable', 'string', 'max:20'],
+
+            /*
+             * Eight of COCSOL's nominees are `US`. A nominee living abroad is
+             * an ordinary case in a cooperative of civil servants, and it is
+             * the reason this column survived the sweep - see the migration.
+             */
+            'country_code' => ['sometimes', 'string', 'size:2', 'alpha'],
             'address' => ['sometimes', 'nullable', 'string', 'max:2000'],
 
             // A job and a workplace together, which is how the legacy data
@@ -210,6 +217,7 @@ class NomineeController extends Controller
             'birth_date' => $n->birth_date?->toDateString(),
             'nid' => $n->nid,
             'mobile' => $n->mobile,
+            'country_code' => $n->country_code,
             'address' => $n->address,
             'profession' => $n->profession,
 

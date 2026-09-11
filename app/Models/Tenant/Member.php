@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models\Tenant;
 
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
@@ -29,7 +30,7 @@ class Member extends Authenticatable
     protected $fillable = [
         'name', 'father_name', 'mother_name', 'spouse_name',
         'bcs_batch', 'cadre_id', 'joining_date', 'birth_date', 'gender',
-        'mobile', 'email', 'password',
+        'mobile', 'country_code', 'email', 'password',
         'nid', 'present_address', 'permanent_address', 'office_address',
         'emergency_contact',
         'introduced_by_member_id', 'introduced_by_name',
@@ -39,6 +40,23 @@ class Member extends Authenticatable
     ];
 
     protected $hidden = ['password', 'remember_token'];
+
+    /**
+     * Stored upper case, always.
+     *
+     * A MUTATOR RATHER THAN A VALIDATION RULE, because the API is not the only
+     * writer: an import reads the legacy column straight into the model, and
+     * `bd` and `BD` as two values in a column with two values in it is the kind
+     * of thing nobody notices until a query returns half an answer.
+     */
+    protected function countryCode(): Attribute
+    {
+        return Attribute::make(
+            set: fn (?string $value) => $value === null || $value === ''
+                ? 'BD'
+                : strtoupper($value),
+        );
+    }
 
     protected function casts(): array
     {

@@ -227,6 +227,17 @@ class MemberController extends Controller
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'mobile' => ['required', 'string', 'max:20', 'unique:members,mobile'],
+
+            /*
+             * Which country the mobile belongs to (ISO 3166-1 alpha-2).
+             *
+             * SHAPE ONLY, not a list of the world's countries. A whitelist here
+             * would be a second thing to keep current for the sake of rejecting
+             * `XX`, and the association's own staff type these. Two letters,
+             * stored upper case, is the check that stops `bangladesh` and `+88`
+             * from landing in a column that means neither.
+             */
+            'country_code' => ['sometimes', 'string', 'size:2', 'alpha'],
             'email' => ['nullable', 'email', 'max:255', 'unique:members,email'],
             'father_name' => ['nullable', 'string', 'max:255'],
             'mother_name' => ['nullable', 'string', 'max:255'],
@@ -283,6 +294,7 @@ class MemberController extends Controller
         $validated = $request->validate([
             'name' => ['sometimes', 'string', 'max:255'],
             'mobile' => ['sometimes', 'string', 'max:20', 'unique:members,mobile,'.$record->id],
+            'country_code' => ['sometimes', 'string', 'size:2', 'alpha'],
             'email' => ['sometimes', 'nullable', 'email', 'max:255', 'unique:members,email,'.$record->id],
             'father_name' => ['sometimes', 'nullable', 'string', 'max:255'],
             'present_address' => ['sometimes', 'nullable', 'string'],
@@ -461,6 +473,14 @@ class MemberController extends Controller
             'id' => $member->id,
             'name' => $member->name,
             'mobile' => $member->mobile,
+
+            /*
+             * WITH the mobile, not down in the detail block, because it is part
+             * of reading the number: `12025550123` is a wrong number in Dhaka
+             * and a correct one in Washington, and a list that shows one
+             * without the other invites somebody to dial it.
+             */
+            'country_code' => $member->country_code,
             'email' => $member->email,
             'status' => $member->status,
             'membership_no' => $member->associatorInfo?->membership_no,

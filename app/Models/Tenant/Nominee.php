@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models\Tenant;
 
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
@@ -40,11 +41,29 @@ class Nominee extends Model
         'birth_date',
         'nid',
         'mobile',
+        'country_code',
         'address',
         'profession',
         'image',
         'share_percentage',
     ];
+
+    /**
+     * Stored upper case, always.
+     *
+     * A MUTATOR RATHER THAN A VALIDATION RULE, because the API is not the only
+     * writer: an import reads the legacy column straight into the model, and
+     * `bd` and `BD` as two values in a column with two values in it is the kind
+     * of thing nobody notices until a query returns half an answer.
+     */
+    protected function countryCode(): Attribute
+    {
+        return Attribute::make(
+            set: fn (?string $value) => $value === null || $value === ''
+                ? 'BD'
+                : strtoupper($value),
+        );
+    }
 
     protected function casts(): array
     {

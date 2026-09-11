@@ -214,7 +214,12 @@
         </tr>
         <tr>
             <td class="label">Mobile</td>
-            <td>{{ $show($member->mobile) }}</td>
+            {{-- The country only when it is NOT Bangladesh. "(BD)" against
+                 three hundred numbers is noise; "(US)" against eight is the
+                 thing a reader has to know before dialling. --}}
+            <td>
+                {{ $show($member->mobile) }}{{ $member->country_code && $member->country_code !== 'BD' ? ' ('.$member->country_code.')' : '' }}
+            </td>
             <td class="label">Email</td>
             <td>{{ $show($member->email) }}</td>
         </tr>
@@ -284,7 +289,9 @@
                 <td class="label">Gender</td>
                 <td>{{ $nominee->gender ? ucfirst($nominee->gender) : '—' }}</td>
                 <td class="label">Mobile</td>
-                <td>{{ $show($nominee->mobile) }}</td>
+                <td>
+                    {{ $show($nominee->mobile) }}{{ $nominee->country_code && $nominee->country_code !== 'BD' ? ' ('.$nominee->country_code.')' : '' }}
+                </td>
             </tr>
             <tr>
                 <td class="label">National ID</td>

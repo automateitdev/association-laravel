@@ -81,6 +81,14 @@ class ProfileController extends Controller
             'mobile' => ['sometimes', 'string', 'max:20', Rule::unique('members', 'mobile')->ignore($member->id)],
             'email' => ['sometimes', 'nullable', 'email', 'max:255', Rule::unique('members', 'email')->ignore($member->id)],
 
+            /*
+             * With the mobile, because they change together: a member who moves
+             * abroad gets a new number AND a new country for it, and a queue
+             * that accepts one without the other files a request that makes the
+             * record worse than it was.
+             */
+            'country_code' => ['sometimes', 'string', 'size:2', 'alpha'],
+
             'nid' => ['sometimes', 'nullable', 'string', 'max:50'],
             'present_address' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'permanent_address' => ['sometimes', 'nullable', 'string', 'max:2000'],

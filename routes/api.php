@@ -272,6 +272,8 @@ Route::prefix('v1')->group(function () {
                 ->middleware('permission:settings.view');
             Route::put('/signatories/{role}', [SignatoryController::class, 'update'])
                 ->middleware('permission:settings.edit');
+            Route::get('/signatories/{role}/signature', [SignatoryController::class, 'showSignature'])
+                ->middleware('permission:settings.view');
             Route::post('/signatories/{role}/signature', [SignatoryController::class, 'upload'])
                 ->middleware('permission:settings.edit');
             Route::delete('/signatories/{role}/signature', [SignatoryController::class, 'destroySignature'])

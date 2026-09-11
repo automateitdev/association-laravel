@@ -368,6 +368,78 @@ class MemberDocumentPrintTest extends TenantTestCase
         });
     }
 
+    /**
+     * The filed signature can be looked at.
+     *
+     * WITHOUT THIS THE UPLOAD IS UNVERIFIABLE. An association files a scan and
+     * then prints forty certificates with it; seeing what was filed, before
+     * rather than after, is the difference between a mistake caught and a batch
+     * reprinted. `has_signature` says one exists - it cannot say it is the
+     * right way up.
+     */
+    public function test_the_filed_signature_can_be_read_back(): void
+    {
+        Storage::fake('local');
+
+        $token = $this->staffToken();
+
+        $this->withHeaders($this->headers($token))
+            ->putJson('/api/v1/staff/signatories/secretary', ['name' => 'Md. Abdul Karim'])
+            ->assertStatus(200);
+
+        // Nothing filed yet: a 404, not an empty 200 a client would try to
+        // render as an image.
+        $this->withHeaders($this->headers($token))
+            ->get('/api/v1/staff/signatories/secretary/signature')
+            ->assertStatus(404);
+
+        $this->withHeaders($this->headers($token))
+            ->post('/api/v1/staff/signatories/secretary/signature', [
+                'file' => \Illuminate\Http\UploadedFile::fake()->image('sign.png'),
+            ])
+            ->assertStatus(200);
+
+        $response = $this->withHeaders($this->headers($token))
+            ->get('/api/v1/staff/signatories/secretary/signature')
+            ->assertStatus(200);
+
+        self::assertStringContainsString('image/', (string) $response->headers->get('Content-Type'));
+
+        // Identity data never belongs in a shared browser cache - the same rule
+        // as every other document this API streams.
+        self::assertStringContainsString(
+            'no-store',
+            (string) $response->headers->get('Cache-Control'),
+        );
+    }
+
+    /** Removing the image leaves the person, who is a separate fact. */
+    public function test_removing_a_signature_keeps_the_person(): void
+    {
+        Storage::fake('local');
+
+        $token = $this->staffToken();
+
+        $this->withHeaders($this->headers($token))
+            ->putJson('/api/v1/staff/signatories/treasurer', ['name' => 'Md. Jalal Ahmed'])
+            ->assertStatus(200);
+
+        $this->withHeaders($this->headers($token))
+            ->post('/api/v1/staff/signatories/treasurer/signature', [
+                'file' => \Illuminate\Http\UploadedFile::fake()->image('sign.png'),
+            ])
+            ->assertStatus(200);
+
+        $response = $this->withHeaders($this->headers($token))
+            ->deleteJson('/api/v1/staff/signatories/treasurer/signature')
+            ->assertStatus(200);
+
+        $treasurer = collect($response->json('data'))->firstWhere('role', 'treasurer');
+
+        self::assertSame('Md. Jalal Ahmed', $treasurer['name']);
+        self::assertFalse($treasurer['has_signature']);
+    }
+
     public function test_an_unknown_role_is_a_404(): void
     {
         $token = $this->staffToken();

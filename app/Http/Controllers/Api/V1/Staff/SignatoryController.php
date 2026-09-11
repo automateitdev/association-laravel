@@ -14,6 +14,8 @@ use App\Services\DocumentService;
 use DomainException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
  * Who signs the association's documents (legacy `signatures`, `upload-signature`).
@@ -141,6 +143,45 @@ class SignatoryController extends Controller
         $this->audit($request, $role, 'signatory.signature_uploaded', [], ['role' => $role]);
 
         return $this->index();
+    }
+
+    /**
+     * The signature image itself, for looking at.
+     *
+     * WITHOUT THIS THE UPLOAD IS UNVERIFIABLE. An association files a scan and
+     * then prints forty certificates with it; being able to see what was filed,
+     * before rather than after, is the difference between a mistake caught and
+     * a batch reprinted. `has_signature` on the list says one exists - it
+     * cannot say it is the right way up.
+     */
+    public function showSignature(string $role): StreamedResponse
+    {
+        abort_unless(array_key_exists($role, Signatory::ROLES), 404);
+
+        $signatory = Signatory::where('role', $role)->first();
+
+        if ($signatory === null) {
+            throw ApiException::notFound('Signature');
+        }
+
+        try {
+            $document = $this->documents->locate($signatory, 'signature');
+        } catch (DomainException) {
+            throw ApiException::notFound('Signature');
+        }
+
+        return Storage::disk($document->disk)->response(
+            $document->path,
+            $document->original_name,
+            [
+                'Content-Type' => $document->mime,
+
+                // Not something a browser should leave on the disk of a shared
+                // machine at the association office - the same rule as every
+                // other document this API streams.
+                'Cache-Control' => 'private, no-store',
+            ],
+        );
     }
 
     public function destroySignature(Request $request, string $role): JsonResponse

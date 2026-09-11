@@ -548,6 +548,24 @@ Route::prefix('v1')->group(function () {
                 ->middleware('permission:reports.cash-summary');
 
             /*
+             * The ledger document by document, and one document in full.
+             *
+             * The listing's own permission, because it names every member who
+             * paid over a period - which the four statements above do not, and
+             * which is the counter clerk's business rather than the committee's.
+             *
+             * `{trace}` IS CONSTRAINED TO DIGITS so it cannot swallow
+             * `/export`, which is declared below with the other downloads.
+             * Declaration order happens to save us today; it would stop doing
+             * so the first time somebody reorders this file.
+             */
+            Route::get('/reports/voucherwise', [ReportController::class, 'voucherwise'])
+                ->middleware('permission:reports.voucherwise');
+            Route::get('/reports/voucherwise/{trace}', [ReportController::class, 'voucherwiseDocument'])
+                ->whereNumber('trace')
+                ->middleware('permission:reports.voucherwise');
+
+            /*
              * FR-REP-6. Deliberately its own permission: this report names
              * members whose figures are wrong, which is not the same audience
              * as the reports staff read every day.
@@ -577,6 +595,8 @@ Route::prefix('v1')->group(function () {
                 ->middleware(['permission:reports.balance-sheet', 'permission:reports.export']);
             Route::get('/reports/cash-summary/export', [ReportController::class, 'exportCashSummary'])
                 ->middleware(['permission:reports.cash-summary', 'permission:reports.export']);
+            Route::get('/reports/voucherwise/export', [ReportController::class, 'exportVoucherwise'])
+                ->middleware(['permission:reports.voucherwise', 'permission:reports.export']);
             Route::get('/reports/inconsistencies/export', [AuditController::class, 'export'])
                 ->middleware(['permission:reports.inconsistency', 'permission:reports.export']);
         });

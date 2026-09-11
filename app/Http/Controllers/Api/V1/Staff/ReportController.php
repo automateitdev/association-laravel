@@ -10,13 +10,16 @@ use App\Models\Tenant\LedgerTrace;
 use App\Models\Tenant\Member;
 use App\Models\Tenant\PaymentInfo;
 use App\Models\Tenant\PaymentInfoItem;
+use App\Models\Tenant\Voucher;
 use App\Reports\Column;
 use App\Reports\ExportsListings;
 use App\Reports\Report;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -219,6 +222,139 @@ class ReportController extends Controller
         ]);
     }
 
+    /**
+     * Voucher-wise: the ledger read document by document.
+     *
+     * THE OTHER FOUR STATEMENTS AGGREGATE; this one lists. A trial balance says
+     * an account holds 4,300 and a cash summary says 4,300 came in, but neither
+     * can say WHICH documents made it up - and "which" is the question somebody
+     * asks the moment a figure looks wrong.
+     *
+     * A DOCUMENT, NOT A TRACE. Every trace records what produced it, so that
+     * source is the grouping key: one row per payment and per approved voucher,
+     * each with its own total. The legacy report grouped by nothing at all - it
+     * selected the trace id and then called `distinct()`, which can never
+     * collapse anything - so it listed one row per LINE while showing each of
+     * them the whole document's total. Against COCSOL's data that is 15,720
+     * rows standing for 3,378 documents, and the largest is listed 84 times.
+     *
+     * AND IT SHOWS THE AMOUNT, which the legacy computed in two correlated
+     * subqueries per row and then left out of the table entirely.
+     *
+     * PAGINATED, unlike the four statements. Those return every row because a
+     * statement that cannot be totalled is not a statement; this is a listing
+     * of documents, three years of which runs to tens of thousands, and its
+     * totals are taken over the whole range rather than over the page.
+     */
+    public function voucherwise(Request $request): JsonResponse
+    {
+        $filters = $this->voucherwiseFilters($request);
+
+        $result = $this->voucherwiseRows(
+            $filters,
+            min((int) $request->query('per_page', 25), 100),
+        );
+
+        return response()->json([
+            'data' => $result['rows'],
+            'meta' => [
+                'from' => $filters['from'],
+                'to' => $filters['to'],
+            ] + $result['totals'] + $result['page'],
+        ]);
+    }
+
+    /**
+     * One document, line by line - what the legacy's single-voucher page was.
+     *
+     * ADDRESSED BY A TRACE, as the legacy route is, and for a better reason
+     * than imitation: the listing row a reader clicked is a GROUP, and that
+     * group's key is a class name and an id. A class name is an internal detail
+     * and must not become something a client sends back in a URL.
+     *
+     * IT SAYS WHAT THE LEGACY PAGE DID NOT. That page showed ledger, debit,
+     * credit and two totals, and nothing whatever about the document they
+     * belong to - not its date, its number, its kind, nor whether it had since
+     * been reversed. A page of figures with no heading cannot be filed, checked
+     * or disputed afterwards.
+     */
+    public function voucherwiseDocument(int $trace): JsonResponse
+    {
+        $anchor = LedgerTrace::findOrFail($trace);
+
+        $lines = LedgerTrace::query()
+            ->with(['ledger:id,name,account_group_id', 'ledger.accountGroup:id,name'])
+            ->when(
+                $anchor->source_type === null,
+                /*
+                 * An unattributed trace is its own document. `= NULL` matches
+                 * nothing, and `whereNull` on its own would sweep in every
+                 * other orphan in the books; claiming a grouping we cannot
+                 * prove is worse than showing one line and saying so.
+                 */
+                fn ($q) => $q->whereNull('source_type')->where('id', $anchor->id),
+                fn ($q) => $q->where('source_type', $anchor->source_type)
+                    ->where('source_id', $anchor->source_id),
+            )
+            ->orderBy('id')
+            ->get();
+
+        $debit = $lines->reduce(fn ($carry, $line) => bcadd($carry, (string) $line->debit, 2), '0.00');
+        $credit = $lines->reduce(fn ($carry, $line) => bcadd($carry, (string) $line->credit, 2), '0.00');
+
+        $named = $this->nameDocuments(collect([(object) [
+            'source_type' => $anchor->source_type,
+            'source_id' => $anchor->source_id,
+        ]]));
+
+        $name = $named[$anchor->source_type.'|'.$anchor->source_id];
+
+        return response()->json([
+            'data' => [
+                'kind' => $this->documentKind($anchor->source_type),
+                'kind_label' => $this->documentKindLabel($anchor->source_type),
+                'number' => (string) ($anchor->reference ?? ''),
+                'posted_on' => $anchor->posted_on->toDateString(),
+                'description' => $name['description'],
+                'member_id' => $name['member_id'],
+                'entries' => $lines->count(),
+
+                'is_reversal' => $lines->contains(fn ($line) => $line->reverses_id !== null),
+
+                /*
+                 * Whether this document was later undone. Shown because a
+                 * document presented without it reads as current, and a reader
+                 * who acts on a reversed receipt has been misled by a report
+                 * that was accurate about every single figure on it.
+                 */
+                'reversed' => LedgerTrace::whereIn('reverses_id', $lines->pluck('id'))->exists(),
+
+                'lines' => $lines->map(fn ($line) => [
+                    'ledger' => (string) $line->ledger?->name,
+                    'account_group' => (string) $line->ledger?->accountGroup?->name,
+                    'debit' => (string) $line->debit,
+                    'credit' => (string) $line->credit,
+                    'narration' => (string) ($line->narration ?? ''),
+                ])->all(),
+
+                'total_debit' => $debit,
+                'total_credit' => $credit,
+                'balanced' => bccomp($debit, $credit, 2) === 0,
+
+                /*
+                 * How far apart the two sides are, computed HERE with bcmath.
+                 * "Does not balance" without the figure sends the reader to add
+                 * up the column themselves, and the app does not do money
+                 * arithmetic - the same rule that puts every column total in
+                 * `meta` rather than in the screen.
+                 */
+                'difference' => bccomp($debit, $credit, 2) >= 0
+                    ? bcsub($debit, $credit, 2)
+                    : bcsub($credit, $debit, 2),
+            ],
+        ]);
+    }
+
     // ---------------------------------------------------------------- exports
 
     public function exportMemberwisePaid(Request $request): Response
@@ -349,6 +485,50 @@ class ReportController extends Controller
                 currency: $this->currency(),
             ),
             $this->exportFormat($request),
+        );
+    }
+
+    public function exportVoucherwise(Request $request): Response
+    {
+        $filters = $this->voucherwiseFilters($request);
+        $format = $this->exportFormat($request);
+
+        // null: every document in the range, not the page the screen is on.
+        $result = $this->voucherwiseRows($filters, null);
+
+        if (($tooLarge = $this->rejectIfTooLarge($result['rows'])) !== null) {
+            return $tooLarge;
+        }
+
+        $unbalanced = count(array_filter($result['rows'], fn ($row) => ! $row['balanced']));
+
+        return $this->sendExport(
+            new Report(
+                title: 'Voucher-wise report',
+                association: $this->associationName(),
+                columns: [
+                    new Column('posted_on', 'Date'),
+                    new Column('kind_label', 'Kind'),
+                    new Column('number', 'Number'),
+                    new Column('description', 'Description'),
+                    new Column('note', 'Note'),
+                    new Column('entries', 'Entries', Column::TYPE_INTEGER),
+                    new Column('amount', 'Amount', Column::TYPE_MONEY, $result['totals']['total_amount']),
+                ],
+                rows: $result['rows'],
+                filters: array_filter([
+                    'Period' => $this->describePeriod($filters['from'], $filters['to']),
+                    'Kind' => $filters['kind'] === null ? null : ucfirst($filters['kind']),
+                    'Matching' => $filters['q'],
+
+                    // Printed on the file for the same reason the trial balance
+                    // prints its difference: a document that does not balance is
+                    // the finding, and it must survive being read off the screen.
+                    'Documents that do not balance' => $unbalanced === 0 ? null : (string) $unbalanced,
+                ]),
+                currency: $this->currency(),
+            ),
+            $format,
         );
     }
 
@@ -990,6 +1170,261 @@ class ReportController extends Controller
                 'total_paid' => $totalOut,
                 'total_closing' => bcadd($totalOpening, bcsub($totalIn, $totalOut, 2), 2),
             ],
+        ];
+    }
+
+    /**
+     * What a document can be, and what the API calls it.
+     *
+     * `ledger_traces.source_type` is a fully-qualified class name. It names the
+     * namespace layout and the framework, it changes when a model moves, and
+     * nothing outside the server should ever see it - least of all as the value
+     * a client sends back to filter on. So the wire carries a word.
+     */
+    private const DOCUMENT_KINDS = [
+        'payment' => PaymentInfo::class,
+        'voucher' => Voucher::class,
+    ];
+
+    private function documentKind(?string $sourceType): string
+    {
+        $kind = array_search($sourceType, self::DOCUMENT_KINDS, true);
+
+        return $kind === false ? 'other' : $kind;
+    }
+
+    /** The same, as prose - for a PDF, where "payment" in lower case looks like a mistake. */
+    private function documentKindLabel(?string $sourceType): string
+    {
+        return match ($this->documentKind($sourceType)) {
+            'payment' => 'Payment',
+            'voucher' => 'Voucher',
+            default => 'Unattributed',
+        };
+    }
+
+    /**
+     * @return array{from: string, to: string, kind: ?string, q: ?string}
+     *
+     * BOTH BOUNDS REQUIRED, as the statements require them. Every document an
+     * association has ever posted is not a report anybody asked for, and the
+     * legacy form requires them too - it falls back to yesterday and today.
+     */
+    private function voucherwiseFilters(Request $request): array
+    {
+        $validated = $request->validate([
+            'from' => ['required', 'date'],
+            'to' => ['required', 'date', 'after_or_equal:from'],
+            'kind' => ['nullable', Rule::in(array_keys(self::DOCUMENT_KINDS))],
+            'q' => ['nullable', 'string', 'max:100'],
+        ]);
+
+        return [
+            'from' => $validated['from'],
+            'to' => $validated['to'],
+            'kind' => $validated['kind'] ?? null,
+            'q' => $validated['q'] ?? null,
+        ];
+    }
+
+    /**
+     * One row per document, grouped in the database.
+     *
+     * `$perPage` of null asks for every row, which is what an export needs.
+     *
+     * THE TOTAL IS OVER THE RANGE, NOT THE PAGE. A footer that changes as the
+     * reader pages through is worse than no footer: it looks like a total and
+     * answers a question nobody asked. So the amount is one scalar sum over the
+     * filtered traces - which is the same figure, because a document's amount
+     * is the sum of its debits and every document is in exactly one page.
+     *
+     * @param  array{from: string, to: string, kind: ?string, q: ?string}  $filters
+     * @return array{
+     *     rows: list<array<string, mixed>>,
+     *     totals: array<string, string>,
+     *     page: array<string, int>
+     * }
+     */
+    private function voucherwiseRows(array $filters, ?int $perPage): array
+    {
+        $scope = fn ($query) => $query
+            ->whereBetween('posted_on', [$filters['from'], $filters['to']])
+            ->when(
+                $filters['kind'] !== null,
+                fn ($q) => $q->where('source_type', self::DOCUMENT_KINDS[$filters['kind']]),
+            )
+            ->when(
+                $filters['q'] !== null,
+                fn ($q) => $q->where('reference', 'like', '%'.$filters['q'].'%'),
+            );
+
+        $query = $scope(DB::table('ledger_traces'))
+            /*
+             * NULL source types collapse into a single group, which is what
+             * GROUP BY does with them and what this report should say: traces
+             * nobody can attribute are one finding, not a list of documents.
+             * Nothing in this system writes one - both posting paths set a
+             * source - so the row exists for imported data.
+             */
+            ->groupBy('source_type', 'source_id')
+            ->selectRaw(
+                'MIN(id) as trace_id, source_type, source_id, '
+                .'MIN(posted_on) as posted_on, MAX(reference) as reference, '
+                .'SUM(debit) as debit, SUM(credit) as credit, COUNT(*) as entries, '
+                .'MAX(CASE WHEN reverses_id IS NULL THEN 0 ELSE 1 END) as is_reversal'
+            )
+            // Newest first. A listing of documents is read backwards from today,
+            // which is the opposite of the way a statement is read.
+            ->orderByRaw('MIN(posted_on) DESC, MIN(id) DESC');
+
+        if ($perPage === null) {
+            $groups = $query->get();
+
+            $page = [
+                'current_page' => 1,
+                'last_page' => 1,
+                'per_page' => $groups->count(),
+                'total' => $groups->count(),
+            ];
+        } else {
+            $paginator = $query->paginate($perPage);
+            $groups = $paginator->getCollection();
+
+            $page = [
+                'current_page' => $paginator->currentPage(),
+                'last_page' => $paginator->lastPage(),
+                'per_page' => $paginator->perPage(),
+                'total' => $paginator->total(),
+            ];
+        }
+
+        $named = $this->nameDocuments($groups);
+        $rows = [];
+
+        foreach ($groups as $group) {
+            $debit = (string) $group->debit;
+            $credit = (string) $group->credit;
+            $name = $named[$group->source_type.'|'.$group->source_id];
+
+            $reversal = (bool) $group->is_reversal;
+
+            /*
+             * Per DOCUMENT, which no other report asks. A voucher cannot be
+             * approved unbalanced and a payment that posted unbalanced is
+             * refused, so against data this system wrote it is always true -
+             * but this report will be pointed at imported legacy traces, where
+             * it is the first thing worth knowing about a row.
+             */
+            $balanced = bccomp($debit, $credit, 2) === 0;
+
+            $rows[] = [
+                'trace_id' => (int) $group->trace_id,
+                'posted_on' => (string) $group->posted_on,
+                'kind' => $this->documentKind($group->source_type),
+                'kind_label' => $this->documentKindLabel($group->source_type),
+                'number' => (string) ($group->reference ?? ''),
+                'description' => $name['description'],
+                'member_id' => $name['member_id'],
+                'entries' => (int) $group->entries,
+                'amount' => $debit,
+                'is_reversal' => $reversal,
+                'balanced' => $balanced,
+
+                /*
+                 * The two flags as one phrase, computed HERE rather than on the
+                 * screen, so the download and the screen cannot come to differ
+                 * about which documents were worth remarking on.
+                 */
+                'note' => implode(', ', array_filter([
+                    $reversal ? 'Reversal' : null,
+                    $balanced ? null : 'Does not balance',
+                ])),
+            ];
+        }
+
+        $amount = $scope(DB::table('ledger_traces'))->sum('debit');
+
+        return [
+            'rows' => $rows,
+            'totals' => ['total_amount' => number_format((float) $amount, 2, '.', '')],
+            'page' => $page,
+        ];
+    }
+
+    /**
+     * The documents named - one query per kind, not one per row.
+     *
+     * A trace knows what produced it but not what to call it, and the answer
+     * differs by kind: a voucher's description is its narration, a payment's is
+     * the member who made it. Both are what somebody scanning the list is
+     * actually looking for, and neither is on `ledger_traces`.
+     *
+     * @param  Collection<int, object>  $groups
+     * @return array<string, array{description: string, member_id: ?int}>
+     */
+    private function nameDocuments(Collection $groups): array
+    {
+        $idsOf = fn (string $type) => $groups
+            ->where('source_type', $type)
+            ->pluck('source_id')
+            ->all();
+
+        $vouchers = Voucher::query()
+            ->whereIn('id', $idsOf(Voucher::class))
+            ->get(['id', 'voucher_no', 'type', 'narration'])
+            ->keyBy('id');
+
+        $payments = PaymentInfo::query()
+            ->whereIn('id', $idsOf(PaymentInfo::class))
+            ->with('member:id,name')
+            ->get(['id', 'member_id', 'payment_type'])
+            ->keyBy('id');
+
+        $named = [];
+
+        foreach ($groups as $group) {
+            $named[$group->source_type.'|'.$group->source_id] = match ($group->source_type) {
+                Voucher::class => $this->nameVoucher($vouchers->get($group->source_id)),
+                PaymentInfo::class => $this->namePayment($payments->get($group->source_id)),
+
+                /*
+                 * Said plainly rather than left blank. A row with an empty
+                 * description reads as a display fault; this one is a fact
+                 * about the books, and a reader should be able to see it.
+                 */
+                default => ['description' => 'Not attributed to a document', 'member_id' => null],
+            };
+        }
+
+        return $named;
+    }
+
+    /** @return array{description: string, member_id: ?int} */
+    private function nameVoucher(?Voucher $voucher): array
+    {
+        if ($voucher === null) {
+            // Its traces are in the ledger and the document is gone. Not
+            // possible through this API - an approved voucher cannot be deleted
+            // - so it is said out loud rather than shown as an empty cell.
+            return ['description' => 'Voucher no longer on file', 'member_id' => null];
+        }
+
+        return [
+            'description' => $voucher->narration ?: ucfirst((string) $voucher->type).' voucher',
+            'member_id' => null,
+        ];
+    }
+
+    /** @return array{description: string, member_id: ?int} */
+    private function namePayment(?PaymentInfo $payment): array
+    {
+        if ($payment === null) {
+            return ['description' => 'Payment no longer on file', 'member_id' => null];
+        }
+
+        return [
+            'description' => (string) ($payment->member?->name ?? 'Member no longer on file'),
+            'member_id' => $payment->member_id,
         ];
     }
 

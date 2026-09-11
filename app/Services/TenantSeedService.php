@@ -70,6 +70,7 @@ class TenantSeedService
             'Reports' => [
                 'reports.paid', 'reports.due', 'reports.income-statement',
                 'reports.balance-sheet', 'reports.trial-balance', 'reports.cash-summary',
+                'reports.voucherwise',
                 'reports.inconsistency', 'reports.export',
             ],
 

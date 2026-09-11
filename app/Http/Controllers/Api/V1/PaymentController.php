@@ -13,8 +13,9 @@ use App\Reports\InvoiceRenderer;
 use App\Services\PaymentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Symfony\Component\HttpFoundation\Response;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
+use Symfony\Component\HttpFoundation\Response;
 
 class PaymentController extends Controller
 {
@@ -81,11 +82,43 @@ class PaymentController extends Controller
             'payment_type' => ['sometimes', 'in:manual,online'],
             'ledger_id' => ['sometimes', 'nullable', 'integer'],
 
-            // The member's proof of payment - a bank slip, usually photographed
-            // on the phone. With no gateway integrated this is how money
-            // actually reaches the association, so it is a first-class part of
-            // creating a payment rather than an afterthought.
-            'documents' => ['sometimes', 'array', 'max:'.PaymentDocumentService::MAX_PER_PAYMENT],
+            /*
+             * The member's proof of payment - a bank slip, usually photographed
+             * on the phone. With no gateway integrated this is how money
+             * actually reaches the association.
+             *
+             * REQUIRED ON A MANUAL PAYMENT, as it is in the legacy system,
+             * which splits the rule on who is acting: a member filing one must
+             * attach at least one file, and staff recording a collection at the
+             * counter need not. A manual payment is a member ASSERTING that
+             * money left their account, and the slip is the only thing an
+             * approver has to check that against - "I paid, approve it" with
+             * nothing attached is not a payment record, it is a request.
+             *
+             * IT WAS ALREADY ENFORCED, IN THE WRONG PLACE. The member's pay
+             * screen disables Submit until a slip is attached, so the rule
+             * existed - in one client. Anything else reaching this endpoint,
+             * including a future release of the app, could create a manual
+             * payment with no proof at all and nothing would have said so.
+             *
+             * NOT on an online payment: the gateway's own record is the proof,
+             * and there is no slip to photograph.
+             */
+            'documents' => [
+                /*
+                 * `required` alone, with no `min:1` beside it. Laravel's
+                 * `required` already fails an EMPTY array, so `min:1` would add
+                 * nothing to the manual case - and would break the online one,
+                 * where a client sending `documents: []` is saying "none",
+                 * which is correct and must not be an error.
+                 */
+                Rule::requiredIf(
+                    fn () => ($request->input('payment_type') ?? PaymentInfo::TYPE_MANUAL)
+                        === PaymentInfo::TYPE_MANUAL
+                ),
+                'array',
+                'max:'.PaymentDocumentService::MAX_PER_PAYMENT,
+            ],
             'documents.*' => ['file'],
         ]);
 

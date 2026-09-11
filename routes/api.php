@@ -203,7 +203,7 @@ Route::prefix('v1')->group(function () {
         Route::get('/payments/{payment}/documents', [PaymentDocumentController::class, 'index'])
             ->middleware('abilities:member.payments.view,payments.view');
         Route::post('/payments/{payment}/documents', [PaymentDocumentController::class, 'store'])
-            ->middleware('abilities:member.payments.create,payments.view');
+            ->middleware('abilities:member.payments.create,payments.approve');
         Route::get('/payments/{payment}/documents/{index}', [PaymentDocumentController::class, 'show'])
             ->middleware('abilities:member.payments.view,payments.view');
 

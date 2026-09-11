@@ -11,6 +11,8 @@ use App\Services\FeeAssignService;
 use App\Services\FineService;
 use App\Services\TenantSeedService;
 use Carbon\CarbonImmutable;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Tests\Support\TenantFixtures;
 use Tests\TenantTestCase;
@@ -295,12 +297,46 @@ class MemberApiTest extends TenantTestCase
 
     // ---- payments --------------------------------------------------------
 
+    /**
+     * A manual payment needs a slip, so every one of these sends one.
+     *
+     * These tests are about idempotency and ownership rather than proof of
+     * payment - the slip is fixture, not subject. It became required on
+     * 2026-09-12, matching the legacy rule: a member filing a manual payment is
+     * asserting that money left their account, and the slip is the only thing
+     * an approver has to check that against. See PaymentSlipRequiredTest.
+     *
+     * @param  array<string, mixed>  $body
+     */
+    private function createPayment(string $token, array $body, ?string $key = null)
+    {
+        Storage::fake('local');
+
+        return $this->withHeaders(
+            $this->headers($token) + ['Idempotency-Key' => $key ?? (string) Str::uuid()]
+        )->post('/api/v1/payments', $body + ['documents' => [UploadedFile::fake()->image('slip.jpg')]]);
+    }
+
+    /**
+     * The key is checked on a request that is otherwise VALID.
+     *
+     * Validation runs first, so a body missing the slip as well now fails on
+     * that instead - and this test would have been asserting the wrong refusal.
+     */
     public function test_creating_a_payment_requires_an_idempotency_key(): void
     {
+        Storage::fake('local');
+
         [$member, $token, $assign] = $this->memberWithDues();
 
+        // Otherwise valid - slip included - so the missing KEY is the only
+        // thing left to refuse. Without it this now fails validation first and
+        // the test would be asserting the wrong refusal.
         $this->withHeaders($this->headers($token))
-            ->postJson('/api/v1/payments', ['fee_assign_ids' => [$assign->id]])
+            ->post('/api/v1/payments', [
+                'fee_assign_ids' => [$assign->id],
+                'documents' => [UploadedFile::fake()->image('slip.jpg')],
+            ])
             ->assertStatus(400)
             ->assertJsonPath('error.code', 'IDEMPOTENCY_KEY_REQUIRED');
     }
@@ -314,12 +350,10 @@ class MemberApiTest extends TenantTestCase
         [$member, $token, $assign] = $this->memberWithDues();
         $key = (string) Str::uuid();
 
-        $first = $this->withHeaders($this->headers($token) + ['Idempotency-Key' => $key])
-            ->postJson('/api/v1/payments', ['fee_assign_ids' => [$assign->id]])
+        $first = $this->createPayment($token, ['fee_assign_ids' => [$assign->id]], $key)
             ->assertStatus(201);
 
-        $second = $this->withHeaders($this->headers($token) + ['Idempotency-Key' => $key])
-            ->postJson('/api/v1/payments', ['fee_assign_ids' => [$assign->id]])
+        $second = $this->createPayment($token, ['fee_assign_ids' => [$assign->id]], $key)
             ->assertStatus(200);
 
         $this->assertSame(
@@ -338,12 +372,10 @@ class MemberApiTest extends TenantTestCase
         [$member, $token, $assign] = $this->memberWithDues();
         $key = (string) Str::uuid();
 
-        $this->withHeaders($this->headers($token) + ['Idempotency-Key' => $key])
-            ->postJson('/api/v1/payments', ['fee_assign_ids' => [$assign->id]])
+        $this->createPayment($token, ['fee_assign_ids' => [$assign->id]], $key)
             ->assertStatus(201);
 
-        $this->withHeaders($this->headers($token) + ['Idempotency-Key' => $key])
-            ->postJson('/api/v1/payments', ['fee_assign_ids' => [$assign->id + 999]])
+        $this->createPayment($token, ['fee_assign_ids' => [$assign->id + 999]], $key)
             ->assertStatus(409)
             ->assertJsonPath('error.code', 'IDEMPOTENCY_KEY_REUSED');
     }
@@ -352,8 +384,7 @@ class MemberApiTest extends TenantTestCase
     {
         [$member, $token, $assign] = $this->memberWithDues();
 
-        $this->withHeaders($this->headers($token) + ['Idempotency-Key' => (string) Str::uuid()])
-            ->postJson('/api/v1/payments', ['fee_assign_ids' => [$assign->id]])
+        $this->createPayment($token, ['fee_assign_ids' => [$assign->id]])
             ->assertStatus(201)
             ->assertJsonPath('data.payable_amount', '1000.00')
             ->assertJsonPath('data.fine_amount', '200.00')
@@ -379,8 +410,7 @@ class MemberApiTest extends TenantTestCase
             return $stranger->createToken('test', ['member.payments.create'])->plainTextToken;
         });
 
-        $this->withHeaders($this->headers($strangerToken) + ['Idempotency-Key' => (string) Str::uuid()])
-            ->postJson('/api/v1/payments', ['fee_assign_ids' => [$ownersAssign->id]])
+        $this->createPayment($strangerToken, ['fee_assign_ids' => [$ownersAssign->id]])
             ->assertStatus(403)
             ->assertJsonPath('error.code', 'NOT_OWNER');
 
@@ -397,8 +427,8 @@ class MemberApiTest extends TenantTestCase
     {
         [$owner, $ownerToken, $assign] = $this->memberWithDues();
 
-        $paymentId = $this->withHeaders($this->headers($ownerToken) + ['Idempotency-Key' => (string) Str::uuid()])
-            ->postJson('/api/v1/payments', ['fee_assign_ids' => [$assign->id]])
+        $paymentId = $this->createPayment($ownerToken, ['fee_assign_ids' => [$assign->id]])
+            ->assertStatus(201)
             ->json('data.id');
 
         $strangerToken = $this->inTenant(function () {

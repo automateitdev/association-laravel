@@ -10,6 +10,7 @@ use App\Models\Tenant\FeeAssign;
 use App\Models\Tenant\Member;
 use App\Models\Tenant\PaymentInfo;
 use App\Reports\InvoiceRenderer;
+use App\Services\PaymentDocumentService;
 use App\Services\PaymentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -44,9 +45,10 @@ use Symfony\Component\HttpFoundation\Response;
  */
 class CollectionController extends Controller
 {
-    public function __construct(private readonly PaymentService $payments)
-    {
-    }
+    public function __construct(
+        private readonly PaymentService $payments,
+        private readonly PaymentDocumentService $documents,
+    ) {}
 
     /**
      * What this member currently owes, for the collection screen.
@@ -138,6 +140,22 @@ class CollectionController extends Controller
              * queue afterwards - so it is asked for where it is known.
              */
             'ledger_id' => ['required', 'integer', 'exists:ledgers,id'],
+
+            /*
+             * The slip, when there is one - OPTIONAL, where a member's is
+             * required, and the legacy splits it exactly this way.
+             *
+             * The asymmetry is not an oversight. A member filing a manual
+             * payment is ASSERTING that money left their account, and the slip
+             * is the only thing an approver has to check that against. A clerk
+             * recording a collection took the money themselves; their word is
+             * the record, and the association's own audit trail says who they
+             * are. Often there IS a slip - somebody paid at the bank and
+             * brought it to the counter - and until now there was nowhere to
+             * put it at the moment it was in the clerk's hand.
+             */
+            'documents' => ['sometimes', 'array', 'max:'.PaymentDocumentService::MAX_PER_PAYMENT],
+            'documents.*' => ['file'],
         ]);
 
         $key = trim((string) $request->header('Idempotency-Key'));
@@ -185,6 +203,17 @@ class CollectionController extends Controller
             );
         } catch (\DomainException $e) {
             throw new ApiException('VALIDATION_FAILED', $e->getMessage(), 422);
+        }
+
+        // Before the idempotency key is recorded, so a rejected file leaves no
+        // collection behind and the same key and body can be retried - the same
+        // ordering the member endpoint uses.
+        if ($request->hasFile('documents')) {
+            try {
+                $this->documents->attach($payment, $request->file('documents'));
+            } catch (\DomainException $e) {
+                throw new ApiException('DOCUMENT_REJECTED', $e->getMessage(), 422);
+            }
         }
 
         DB::table('idempotency_keys')->insert([

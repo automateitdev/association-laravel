@@ -19,24 +19,42 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  * Proof-of-payment documents.
  *
  * Serves both audiences from one place, because the authorisation rule is the
- * same shape for each: a member reaches their OWN payment's documents, staff
- * reach any payment's documents if they may approve payments. Splitting it
- * would mean two places to get that wrong.
+ * same shape for each: a member reaches their OWN payment's documents, and
+ * staff reach any payment's. Splitting it would mean two places to get that
+ * wrong.
+ *
+ * WHAT STAFF NEED DIFFERS BY DIRECTION. Reading a slip is `payments.view` -
+ * an approver has to see what they are deciding on. ATTACHING one is
+ * `payments.approve`, because it is evidence a decision will rest on, and a
+ * read-only account filing it is not a thing anybody asked for.
  */
 class PaymentDocumentController extends Controller
 {
     public function __construct(private readonly PaymentDocumentService $documents) {}
 
     /**
-     * Attach documents to a payment that is still awaiting approval.
+     * Attach FURTHER documents to a payment that is still awaiting approval.
      *
-     * Separate from payment creation on purpose: a member who paid at the bank
-     * on Tuesday and photographed the slip on Wednesday should not have to
-     * cancel and recreate the payment.
+     * This used to say a member who paid on Tuesday and photographed the slip
+     * on Wednesday should not have to recreate the payment - written when a
+     * manual payment could be filed with nothing attached. It cannot any more:
+     * the slip is required at creation, as it is in the legacy system, because
+     * "I paid, approve it" with no proof is a request rather than a record.
+     *
+     * So this is for what comes AFTER the first one - the back of the slip, a
+     * stamped copy the bank gave them the next day, or an approver filing what
+     * a member brought to the counter.
      */
     public function store(Request $request, int $payment): JsonResponse
     {
-        $record = $this->authorisePayment($request, $payment);
+        /*
+         * ATTACHING IS NOT READING, and this used to be gated as though it
+         * were. The docblock above has always said staff reach these "if they
+         * may APPROVE payments"; the code asked for `payments.view`, so any
+         * read-only account could file evidence against a payment somebody else
+         * was about to decide on. The doc was right and the code was looser.
+         */
+        $record = $this->authorisePayment($request, $payment, 'payments.approve');
 
         if (! $record->isPending()) {
             throw ApiException::conflict(
@@ -103,8 +121,15 @@ class PaymentDocumentController extends Controller
     /**
      * Members reach their own payments; staff reach any, if they may approve.
      */
-    private function authorisePayment(Request $request, int $paymentId): PaymentInfo
-    {
+    /**
+     * @param  string  $permission  what a STAFF account needs. A member's own
+     *                              payment is reached by owning it either way.
+     */
+    private function authorisePayment(
+        Request $request,
+        int $paymentId,
+        string $permission = 'payments.view',
+    ): PaymentInfo {
         $payment = PaymentInfo::find($paymentId) ?? throw ApiException::notFound('Payment');
         $account = $request->user();
 
@@ -116,10 +141,10 @@ class PaymentDocumentController extends Controller
             return $payment;
         }
 
-        if ($account instanceof User && $account->can('payments.view')) {
+        if ($account instanceof User && $account->can($permission)) {
             return $payment;
         }
 
-        throw ApiException::insufficientPermission('payments.view');
+        throw ApiException::insufficientPermission($permission);
     }
 }

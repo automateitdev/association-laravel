@@ -122,19 +122,30 @@ class PaymentDocumentTest extends TenantTestCase
      * A member who paid on Tuesday and photographed the slip on Wednesday
      * should not have to cancel and recreate the payment.
      */
-    public function test_a_member_can_attach_a_slip_to_an_existing_pending_payment(): void
+    /**
+     * A SECOND slip, added afterwards.
+     *
+     * The payment is created with one now - a manual payment without proof is
+     * refused, as it is in the legacy system - so this endpoint is for what
+     * comes after: the member photographs the back of the slip, or the bank
+     * gives them a stamped copy the next day.
+     */
+    public function test_a_member_can_attach_a_further_slip_to_a_pending_payment(): void
     {
         [$memberId, $token, $assign] = $this->memberWithDues();
 
         $paymentId = $this->withHeaders($this->headers($token) + ['Idempotency-Key' => (string) Str::uuid()])
-            ->postJson('/api/v1/payments', ['fee_assign_ids' => [$assign->id]])
+            ->post('/api/v1/payments', [
+                'fee_assign_ids' => [$assign->id],
+                'documents' => [$this->slip('first.jpg')],
+            ])
             ->assertStatus(201)
             ->json('data.id');
 
         $this->withHeaders($this->headers($token))
             ->post("/api/v1/payments/{$paymentId}/documents", ['documents' => [$this->slip('late.jpg')]])
             ->assertStatus(201)
-            ->assertJsonPath('data.documents.0.original_name', 'late.jpg');
+            ->assertJsonPath('data.documents.1.original_name', 'late.jpg');
     }
 
     public function test_documents_cannot_be_added_once_a_payment_is_decided(): void
@@ -142,7 +153,11 @@ class PaymentDocumentTest extends TenantTestCase
         [$memberId, $token, $assign] = $this->memberWithDues();
 
         $paymentId = $this->withHeaders($this->headers($token) + ['Idempotency-Key' => (string) Str::uuid()])
-            ->postJson('/api/v1/payments', ['fee_assign_ids' => [$assign->id]])
+            ->post('/api/v1/payments', [
+                'fee_assign_ids' => [$assign->id],
+                'documents' => [$this->slip()],
+            ])
+            ->assertStatus(201)
             ->json('data.id');
 
         $this->inTenant(function () use ($paymentId) {

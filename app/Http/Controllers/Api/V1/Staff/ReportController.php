@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api\V1\Staff;
 
 use App\Http\Controllers\Controller;
 use App\Models\Tenant\FeeAssign;
+use App\Models\Tenant\LedgerTrace;
 use App\Models\Tenant\Member;
 use App\Models\Tenant\PaymentInfo;
 use App\Models\Tenant\PaymentInfoItem;
@@ -77,6 +78,51 @@ class ReportController extends Controller
         ]);
     }
 
+    /**
+     * Income statement (P-9): what the association earned and spent in a period.
+     *
+     * SIGNED, AND THAT IS THE WHOLE DESIGN DECISION HERE.
+     *
+     * The legacy report sums CREDITS for income ledgers and DEBITS for expense
+     * ones and ignores the other side of each. That is fine until something is
+     * reversed - and reversal is the only correction this system allows
+     * (FR-ACC-9). A reversed receipt posts a debit to the income ledger, the
+     * legacy sum never looks at debits, and the income it reports stays as
+     * though the money were still there.
+     *
+     * So each ledger contributes `credit - debit` if it is income and
+     * `debit - credit` if it is expense, which is what those balances mean, and
+     * a reversal cancels itself out the way it should. A refund on an expense
+     * account behaves the same way.
+     *
+     * WHAT IS DELIBERATELY NOT IN IT:
+     *
+     *   - `opening_balance`. A statement covers a PERIOD; an opening balance is
+     *     a position at a moment. Adding it would restate last year's result
+     *     into this year's every time the report is run.
+     *   - Draft vouchers. `ledger_traces` only exist once a voucher is approved
+     *     (see VoucherService::approve), so this needs no status filter - the
+     *     ledger is the definition of what has happened.
+     *
+     * ONE ROW PER LEDGER, grouped in the database rather than in PHP. An
+     * association's chart runs to dozens of accounts and its traces to
+     * hundreds of thousands; the aggregate belongs where the index is.
+     */
+    public function incomeStatement(Request $request): JsonResponse
+    {
+        $filters = $this->statementFilters($request);
+        $result = $this->incomeStatementRows($filters);
+
+        return response()->json([
+            'data' => $result['rows'],
+            'meta' => [
+                'from' => $filters['from'],
+                'to' => $filters['to'],
+                'accounts' => count($result['rows']),
+            ] + $result['totals'],
+        ]);
+    }
+
     // ---------------------------------------------------------------- exports
 
     public function exportMemberwisePaid(Request $request): Response
@@ -99,6 +145,29 @@ class ReportController extends Controller
                     'Period' => $this->describePeriod($filters['from'], $filters['to']),
                     'Member' => $filters['q'],
                 ]),
+                currency: $this->currency(),
+            ),
+            $format,
+        );
+    }
+
+    public function exportIncomeStatement(Request $request): Response
+    {
+        $filters = $this->statementFilters($request);
+        $format = $this->exportFormat($request);
+        $result = $this->incomeStatementRows($filters);
+
+        if (($tooLarge = $this->rejectIfTooLarge($result['rows'])) !== null) {
+            return $tooLarge;
+        }
+
+        return $this->sendExport(
+            new Report(
+                title: 'Income statement',
+                association: $this->associationName(),
+                columns: $this->statementColumns($result['totals']),
+                rows: $result['rows'],
+                filters: ['Period' => $this->describePeriod($filters['from'], $filters['to'])],
                 currency: $this->currency(),
             ),
             $format,
@@ -506,6 +575,125 @@ class ReportController extends Controller
      *
      * Absent both, it is today's snapshot, exactly as before.
      */
+    /**
+     * @return array{from: string, to: string}
+     *
+     * BOTH BOUNDS REQUIRED, unlike the listings. "All time" is a sensible thing
+     * to ask a list of members; it is not a sensible thing to ask a statement,
+     * which only means anything over a stated period. The legacy form requires
+     * them too.
+     */
+    private function statementFilters(Request $request): array
+    {
+        $validated = $request->validate([
+            'from' => ['required', 'date'],
+            'to' => ['required', 'date', 'after_or_equal:from'],
+        ]);
+
+        return [
+            'from' => $validated['from'],
+            'to' => $validated['to'],
+        ];
+    }
+
+    /**
+     * @param  array{from: string, to: string}  $filters
+     * @return array{rows: list<array<string, string>>, totals: array<string, string>}
+     */
+    private function incomeStatementRows(array $filters): array
+    {
+        $grouped = LedgerTrace::query()
+            ->join('ledgers', 'ledgers.id', '=', 'ledger_traces.ledger_id')
+            ->join('account_groups', 'account_groups.id', '=', 'ledgers.account_group_id')
+            ->join('account_categories', 'account_categories.id', '=', 'account_groups.account_category_id')
+            ->whereIn('account_categories.type', ['income', 'expense'])
+            ->whereBetween('ledger_traces.posted_on', [$filters['from'], $filters['to']])
+            ->groupBy(
+                'account_categories.type',
+                'account_groups.name',
+                'ledgers.id',
+                'ledgers.name',
+            )
+            ->orderByRaw("FIELD(account_categories.type, 'income', 'expense')")
+            ->orderBy('account_groups.name')
+            ->orderBy('ledgers.name')
+            ->selectRaw(
+                'account_categories.type as section, account_groups.name as account_group, '
+                .'ledgers.name as ledger, SUM(ledger_traces.debit) as debit, '
+                .'SUM(ledger_traces.credit) as credit'
+            )
+            ->get();
+
+        $rows = [];
+        $income = '0.00';
+        $expense = '0.00';
+
+        foreach ($grouped as $row) {
+            $debit = (string) $row->debit;
+            $credit = (string) $row->credit;
+
+            // Both sides, always. See the note on incomeStatement() for why the
+            // legacy's one-sided sum cannot see a reversal.
+            $amount = $row->section === 'income'
+                ? bcsub($credit, $debit, 2)
+                : bcsub($debit, $credit, 2);
+
+            if ($row->section === 'income') {
+                $income = bcadd($income, $amount, 2);
+            } else {
+                $expense = bcadd($expense, $amount, 2);
+            }
+
+            $rows[] = [
+                'section' => $row->section,
+                'account_group' => (string) $row->account_group,
+                'ledger' => (string) $row->ledger,
+
+                /*
+                 * SIGNED: income positive, expense negative. One representation,
+                 * so the column a reader sums in a spreadsheet comes to the same
+                 * surplus the server printed - which is the whole point of
+                 * Column::$total carrying the server's figure (FR-REP-8).
+                 */
+                'amount' => $row->section === 'income' ? $amount : bcsub('0.00', $amount, 2),
+            ];
+        }
+
+        return [
+            'rows' => $rows,
+            'totals' => [
+                'total_income' => $income,
+                'total_expense' => $expense,
+
+                /*
+                 * SURPLUS, not "profit". A cooperative society does not trade
+                 * for profit, and its own rules call what is left a surplus -
+                 * which is also the word its committee will be looking for.
+                 */
+                'net_surplus' => bcsub($income, $expense, 2),
+            ],
+        ];
+    }
+
+    /**
+     * @param  array<string, string>  $totals
+     * @return list<Column>
+     */
+    private function statementColumns(array $totals): array
+    {
+        return [
+            new Column('section', 'Section'),
+            new Column('account_group', 'Group'),
+            new Column('ledger', 'Account'),
+            new Column(
+                'amount',
+                'Amount (income +, expense −)',
+                Column::TYPE_MONEY,
+                $totals['net_surplus'],
+            ),
+        ];
+    }
+
     private function dueFilters(Request $request): array
     {
         $validated = $request->validate([

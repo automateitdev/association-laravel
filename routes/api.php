@@ -522,6 +522,15 @@ Route::prefix('v1')->group(function () {
                 ->middleware('permission:reports.due');
 
             /*
+             * The income statement (P-9). Its own permission, already seeded
+             * and until now unrouted: what the association earned and spent is
+             * a committee's business, and is not the same audience as the
+             * member-by-member reports the office reads daily.
+             */
+            Route::get('/reports/income-statement', [ReportController::class, 'incomeStatement'])
+                ->middleware('permission:reports.income-statement');
+
+            /*
              * FR-REP-6. Deliberately its own permission: this report names
              * members whose figures are wrong, which is not the same audience
              * as the reports staff read every day.
@@ -543,6 +552,8 @@ Route::prefix('v1')->group(function () {
                 ->middleware(['permission:reports.paid', 'permission:reports.export']);
             Route::get('/reports/due-info/export', [ReportController::class, 'exportDueInfo'])
                 ->middleware(['permission:reports.due', 'permission:reports.export']);
+            Route::get('/reports/income-statement/export', [ReportController::class, 'exportIncomeStatement'])
+                ->middleware(['permission:reports.income-statement', 'permission:reports.export']);
             Route::get('/reports/inconsistencies/export', [AuditController::class, 'export'])
                 ->middleware(['permission:reports.inconsistency', 'permission:reports.export']);
         });

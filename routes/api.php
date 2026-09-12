@@ -222,6 +222,13 @@ Route::prefix('v1')->group(function () {
 
         Route::middleware('staff')->prefix('staff')->group(function () {
 
+            /*
+             * `dashboard.view` opens the SCREEN. Each figure on it is gated
+             * again inside the controller, on the permission that owns the
+             * report behind it - because a dashboard figure is that report's
+             * information, smaller, and until 2026-09-12 this one endpoint
+             * handed all of it to anyone who could reach the landing page.
+             */
             Route::get('/dashboard', [ReportController::class, 'dashboard'])
                 ->middleware('permission:dashboard.view');
 

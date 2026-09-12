@@ -93,14 +93,30 @@ class StaffApiTest extends TenantTestCase
             ->assertStatus(403);
     }
 
-    public function test_an_operator_can_reach_the_dashboard(): void
+    /**
+     * An operator REACHES the dashboard and is entitled to nothing on it.
+     *
+     * This test used to assert the opposite - that the payload carried
+     * `members`, `collections` and `outstanding` - and in doing so it recorded
+     * the defect rather than the intent. The operator role holds
+     * `dashboard.view`, `shares.view` and `shares.transfer`; the two tests
+     * above confirm it cannot list members or decide payments, and this one was
+     * quietly asserting that the landing page told it the association's total
+     * arrears anyway.
+     *
+     * Each block is now gated on the permission that owns the report behind it.
+     * See DashboardPermissionTest.
+     */
+    public function test_an_operator_reaches_the_dashboard_and_sees_no_figures_on_it(): void
     {
         $token = $this->staffToken('operator');
 
-        $this->withHeaders($this->headers($token))
+        $response = $this->withHeaders($this->headers($token))
             ->getJson('/api/v1/staff/dashboard')
             ->assertOk()
-            ->assertJsonStructure(['data' => ['members', 'collections', 'outstanding']]);
+            ->assertJsonPath('meta.visible', []);
+
+        self::assertSame([], $response->json('data'));
     }
 
     // ---- members ---------------------------------------------------------

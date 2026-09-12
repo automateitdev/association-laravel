@@ -891,36 +891,176 @@ class ReportController extends Controller
     /**
      * Headline figures for the staff dashboard.
      */
-    public function dashboard(): JsonResponse
+    /**
+     * The staff landing screen.
+     *
+     * EVERY BLOCK IS GATED ON THE PERMISSION THAT OWNS IT, and until
+     * 2026-09-12 none of them were. `dashboard.view` returned the whole
+     * payload, which made this endpoint a way round every other permission on
+     * the platform: the seeded `operator` role holds `dashboard.view`,
+     * `shares.view` and `shares.transfer` and nothing else, and it was reading
+     * every member count, the association's total collections, its total
+     * arrears and the approval backlog - none of which it may reach by any
+     * other route.
+     *
+     * A figure on a dashboard is the same information as the report behind it,
+     * smaller. So each block asks for the permission that grants that
+     * information in full elsewhere:
+     *
+     *   members      members.view    the register
+     *   collections  reports.paid    what members actually paid
+     *   outstanding  reports.due     what is owed
+     *   approvals    payments.view   the queue itself
+     *
+     * WHAT IS OMITTED IS NAMED, in `meta.visible`. The screen needs to tell
+     * "nothing to show" apart from "you may not see this", and a client that
+     * had to infer it from absent keys would guess wrong the first time a
+     * figure legitimately came back empty.
+     *
+     * INSTALMENTS AND FINES STAY APART, here as everywhere. There is no total
+     * on this endpoint and cannot be one: a single "collected" figure that
+     * silently includes fines is defect D-1.
+     */
+    public function dashboard(Request $request): JsonResponse
     {
-        $completedItems = PaymentInfoItem::query()->where('payment_status', PaymentInfo::STATUS_COMPLETED);
+        $user = $request->user();
+
+        $data = [];
+        $visible = [];
+
+        if ($user->can('members.view')) {
+            $visible[] = 'members';
+            $data['members'] = [
+                'active' => Member::where('status', Member::STATUS_ACTIVE)->count(),
+                'inactive' => Member::where('status', Member::STATUS_INACTIVE)->count(),
+                'suspended' => Member::where('status', Member::STATUS_SUSPENDED)->count(),
+            ];
+        }
+
+        if ($user->can('reports.paid')) {
+            $visible[] = 'collections';
+            $data['collections'] = $this->collectedSummary();
+        }
+
+        if ($user->can('reports.due')) {
+            $visible[] = 'outstanding';
+            $data['outstanding'] = [
+                'instalments' => $this->money(FeeAssign::outstanding()->sum('amount')),
+                'fines' => $this->money(FeeAssign::outstanding()->sum('fine_amount')),
+            ];
+        }
+
+        if ($user->can('payments.view')) {
+            $visible[] = 'approvals';
+
+            /*
+             * What the approval queue actually holds - so the figure that sends
+             * somebody to that screen matches what they find there. Payments
+             * with a gateway_reference are the bank's to resolve and are not
+             * offered for approval (ADR-0007).
+             */
+            $data['payments_pending_approval'] = PaymentInfo::where('status', PaymentInfo::STATUS_PENDING)
+                ->whereNull('gateway_reference')
+                ->count();
+        }
 
         return response()->json([
-            'data' => [
-                'members' => [
-                    'active' => Member::where('status', Member::STATUS_ACTIVE)->count(),
-                    'inactive' => Member::where('status', Member::STATUS_INACTIVE)->count(),
-                    'suspended' => Member::where('status', Member::STATUS_SUSPENDED)->count(),
-                ],
-                'collections' => [
-                    'instalments' => $this->money((clone $completedItems)->sum('amount')),
-                    'fines' => $this->money((clone $completedItems)->sum('fine_amount')),
-                ],
-                'outstanding' => [
-                    'instalments' => $this->money(FeeAssign::outstanding()->sum('amount')),
-                    'fines' => $this->money(FeeAssign::outstanding()->sum('fine_amount')),
-                ],
-                /*
-                 * What the approval queue actually holds - so the figure that
-                 * sends somebody to that screen matches what they find there.
-                 * Payments with a gateway_reference are the bank's to resolve
-                 * and are not offered for approval (ADR-0007).
-                 */
-                'payments_pending_approval' => PaymentInfo::where('status', PaymentInfo::STATUS_PENDING)
-                    ->whereNull('gateway_reference')
-                    ->count(),
-            ],
+            'data' => $data,
+            'meta' => ['visible' => $visible],
         ]);
+    }
+
+    /**
+     * What has been collected: in total, this month, and month by month.
+     *
+     * THE ALL-TIME FIGURE ALONE SAYS VERY LITTLE. "৳2,000 collected" against
+     * "৳126,000 outstanding" reads as a failing association when it may be a
+     * new one - the two figures cover different spans and are not comparable.
+     * A month, and the months before it, are what make the number mean
+     * something.
+     *
+     * BY PAYMENT DATE, NOT BY PERIOD. An instalment for January paid in March
+     * was collected in March; charting it under January would describe money
+     * the association did not have.
+     *
+     * @return array<string, mixed>
+     */
+    private function collectedSummary(): array
+    {
+        $completed = fn () => PaymentInfoItem::query()
+            ->where('payment_info_items.payment_status', PaymentInfo::STATUS_COMPLETED)
+            ->join('payment_infos', 'payment_infos.id', '=', 'payment_info_items.payment_info_id');
+
+        $monthStart = CarbonImmutable::now()->startOfMonth()->toDateString();
+
+        $thisMonth = $completed()->whereDate(
+            DB::raw('COALESCE(payment_infos.payment_date, payment_infos.created_at)'),
+            '>=',
+            $monthStart,
+        );
+
+        return [
+            'instalments' => $this->money($completed()->sum('payment_info_items.amount')),
+            'fines' => $this->money($completed()->sum('payment_info_items.fine_amount')),
+
+            'this_month' => [
+                'instalments' => $this->money((clone $thisMonth)->sum('payment_info_items.amount')),
+                'fines' => $this->money((clone $thisMonth)->sum('payment_info_items.fine_amount')),
+            ],
+
+            'by_month' => $this->collectedByMonth(),
+        ];
+    }
+
+    /**
+     * Instalments collected in each of the last six months, oldest first.
+     *
+     * SIX, AND EVERY ONE OF THEM PRESENT. A month with no collections is a zero
+     * in this series, not a gap: a chart drawn from only the months that have
+     * rows silently closes up the quiet ones and turns a bad quarter into a
+     * straight line.
+     *
+     * Instalments only. Fines are a different thing and charting them together
+     * would be the one addition this platform does not make.
+     *
+     * @return list<array{month: string, label: string, instalments: string}>
+     */
+    private function collectedByMonth(): array
+    {
+        $months = [];
+        $start = CarbonImmutable::now()->startOfMonth()->subMonths(5);
+
+        for ($i = 0; $i < 6; $i++) {
+            $month = $start->addMonths($i);
+            $months[$month->format('Y-m')] = [
+                'month' => $month->format('Y-m'),
+                'label' => $month->format('M'),
+                'instalments' => '0.00',
+            ];
+        }
+
+        $rows = PaymentInfoItem::query()
+            ->where('payment_info_items.payment_status', PaymentInfo::STATUS_COMPLETED)
+            ->join('payment_infos', 'payment_infos.id', '=', 'payment_info_items.payment_info_id')
+            ->whereDate(
+                DB::raw('COALESCE(payment_infos.payment_date, payment_infos.created_at)'),
+                '>=',
+                $start->toDateString(),
+            )
+            ->selectRaw(
+                "DATE_FORMAT(COALESCE(payment_infos.payment_date, payment_infos.created_at), '%Y-%m') as month, "
+                .'SUM(payment_info_items.amount) as instalments'
+            )
+            ->groupBy('month')
+            ->get();
+
+        foreach ($rows as $row) {
+            if (isset($months[$row->month])) {
+                $months[$row->month]['instalments'] = $this->money($row->instalments);
+            }
+        }
+
+        return array_values($months);
     }
 
     // ---------------------------------------------------------------- filters

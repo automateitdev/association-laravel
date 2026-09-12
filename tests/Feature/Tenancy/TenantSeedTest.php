@@ -88,8 +88,28 @@ class TenantSeedTest extends TenantTestCase
             $this->assertFalse($adminPermissions->contains('roles.delete'));
             $this->assertFalse($adminPermissions->contains('users.create'));
 
-            // operator matches the legacy operator: dashboard and shares only.
-            $this->assertSame(3, Role::findByName('operator', 'web')->permissions()->count());
+            /*
+             * The operator: the landing page, two of its cards, and shares.
+             *
+             * Named rather than counted. A count says "5" and stops being read
+             * the moment somebody changes it; what matters about this role is
+             * WHICH five - and in particular that the two dashboard cards it
+             * holds are the operational ones, with neither of the money cards
+             * among them. That is the distinction the whole per-card permission
+             * split exists to make.
+             */
+            $operator = Role::findByName('operator', 'web')->permissions()->pluck('name');
+
+            $this->assertEqualsCanonicalizing([
+                'dashboard.view',
+                'dashboard.approvals',
+                'dashboard.members',
+                'shares.view',
+                'shares.transfer',
+            ], $operator->all());
+
+            $this->assertFalse($operator->contains('dashboard.collections'));
+            $this->assertFalse($operator->contains('dashboard.outstanding'));
         });
     }
 

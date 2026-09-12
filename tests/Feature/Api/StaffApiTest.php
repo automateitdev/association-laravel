@@ -94,29 +94,31 @@ class StaffApiTest extends TenantTestCase
     }
 
     /**
-     * An operator REACHES the dashboard and is entitled to nothing on it.
+     * An operator sees the two cards it works from, and no money.
      *
-     * This test used to assert the opposite - that the payload carried
-     * `members`, `collections` and `outstanding` - and in doing so it recorded
-     * the defect rather than the intent. The operator role holds
-     * `dashboard.view`, `shares.view` and `shares.transfer`; the two tests
-     * above confirm it cannot list members or decide payments, and this one was
-     * quietly asserting that the landing page told it the association's total
-     * arrears anyway.
+     * This test once asserted the opposite of both halves - that the payload
+     * carried `members`, `collections` AND `outstanding` - and in doing so
+     * recorded the defect rather than the intent: the two tests above confirm
+     * the same role cannot list a member or decide a payment, while this one
+     * quietly asserted the landing page told it the association's total arrears
+     * anyway.
      *
-     * Each block is now gated on the permission that owns the report behind it.
-     * See DashboardPermissionTest.
+     * Each card now has its own permission, so the role can be given exactly
+     * what a counter clerk needs: what is waiting to be approved and who is not
+     * admitted. It still cannot open either - see
+     * DashboardPermissionTest::test_a_card_can_be_visible_to_somebody_who_cannot_open_it.
      */
-    public function test_an_operator_reaches_the_dashboard_and_sees_no_figures_on_it(): void
+    public function test_an_operator_sees_the_operational_cards_and_no_money(): void
     {
         $token = $this->staffToken('operator');
 
         $response = $this->withHeaders($this->headers($token))
             ->getJson('/api/v1/staff/dashboard')
             ->assertOk()
-            ->assertJsonPath('meta.visible', []);
+            ->assertJsonPath('meta.visible', ['members', 'approvals']);
 
-        self::assertSame([], $response->json('data'));
+        self::assertArrayNotHasKey('collections', $response->json('data'));
+        self::assertArrayNotHasKey('outstanding', $response->json('data'));
     }
 
     // ---- members ---------------------------------------------------------

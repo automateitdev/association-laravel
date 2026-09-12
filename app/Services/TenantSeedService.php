@@ -36,7 +36,32 @@ class TenantSeedService
     public static function permissionCatalogue(): array
     {
         return [
-            'Dashboard' => ['dashboard.view'],
+            /*
+             * ONE PERMISSION PER CARD, not one for the page.
+             *
+             * `dashboard.view` opens the screen. What is ON it is then chosen
+             * card by card, because an association's answer differs per figure
+             * and per role: a cashier may well need to see how many payments
+             * are waiting and how many members are unadmitted, and have no
+             * business seeing what the association is owed.
+             *
+             * These are DELIBERATELY NOT the report permissions. Gating the
+             * cards on `members.view` and `reports.due` - which is what this
+             * did first - ties two different questions together: whether
+             * somebody may see a COUNT, and whether they may open the register
+             * behind it. An operator who should see "2 to admit" would have had
+             * to be given the whole member list to get it.
+             *
+             * So a card can be shown to somebody who cannot open what it counts.
+             * The screen handles that: the figure appears, and it is not a door.
+             */
+            'Dashboard' => [
+                'dashboard.view',
+                'dashboard.approvals',
+                'dashboard.members',
+                'dashboard.collections',
+                'dashboard.outstanding',
+            ],
 
             'Members' => [
                 'members.view', 'members.create', 'members.edit',
@@ -233,7 +258,21 @@ class TenantSeedService
      *
      * @var list<string>
      */
-    private const OPERATOR = ['dashboard.view', 'shares.view', 'shares.transfer'];
+    private const OPERATOR = [
+        'dashboard.view',
+
+        /*
+         * The two cards a counter clerk works from: what is waiting to be
+         * approved, and who is not admitted yet. NOT the money - what the
+         * association holds and is owed is a committee's business, and an
+         * operator who needs it can be given it.
+         */
+        'dashboard.approvals',
+        'dashboard.members',
+
+        'shares.view',
+        'shares.transfer',
+    ];
 
     /**
      * Which seeded roles a permission belongs to, ON THE DAY IT IS CREATED.

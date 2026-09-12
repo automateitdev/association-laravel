@@ -903,14 +903,21 @@ class ReportController extends Controller
      * arrears and the approval backlog - none of which it may reach by any
      * other route.
      *
-     * A figure on a dashboard is the same information as the report behind it,
-     * smaller. So each block asks for the permission that grants that
-     * information in full elsewhere:
+     * ONE PERMISSION PER CARD, and deliberately NOT the report permissions.
+     * The first fix for the leak gated each block on the permission that owns
+     * the report behind it - `members.view`, `reports.due` - which ties two
+     * different questions together: whether somebody may see a COUNT, and
+     * whether they may open the register behind it. An operator who should see
+     * "2 members to admit" would have had to be handed the whole register to
+     * get it.
      *
-     *   members      members.view    the register
-     *   collections  reports.paid    what members actually paid
-     *   outstanding  reports.due     what is owed
-     *   approvals    payments.view   the queue itself
+     *   members      dashboard.members
+     *   collections  dashboard.collections
+     *   outstanding  dashboard.outstanding
+     *   approvals    dashboard.approvals
+     *
+     * So a card can be shown to somebody who cannot open what it counts. The
+     * screen handles that: the figure appears, and it is not a door.
      *
      * WHAT IS OMITTED IS NAMED, in `meta.visible`. The screen needs to tell
      * "nothing to show" apart from "you may not see this", and a client that
@@ -928,7 +935,7 @@ class ReportController extends Controller
         $data = [];
         $visible = [];
 
-        if ($user->can('members.view')) {
+        if ($user->can('dashboard.members')) {
             $visible[] = 'members';
             $data['members'] = [
                 'active' => Member::where('status', Member::STATUS_ACTIVE)->count(),
@@ -937,12 +944,12 @@ class ReportController extends Controller
             ];
         }
 
-        if ($user->can('reports.paid')) {
+        if ($user->can('dashboard.collections')) {
             $visible[] = 'collections';
             $data['collections'] = $this->collectedSummary();
         }
 
-        if ($user->can('reports.due')) {
+        if ($user->can('dashboard.outstanding')) {
             $visible[] = 'outstanding';
             $data['outstanding'] = [
                 'instalments' => $this->money(FeeAssign::outstanding()->sum('amount')),
@@ -950,7 +957,7 @@ class ReportController extends Controller
             ];
         }
 
-        if ($user->can('payments.view')) {
+        if ($user->can('dashboard.approvals')) {
             $visible[] = 'approvals';
 
             /*
@@ -1013,17 +1020,19 @@ class ReportController extends Controller
     }
 
     /**
-     * Instalments collected in each of the last six months, oldest first.
+     * What was collected in each of the last six months, oldest first.
      *
      * SIX, AND EVERY ONE OF THEM PRESENT. A month with no collections is a zero
      * in this series, not a gap: a chart drawn from only the months that have
      * rows silently closes up the quiet ones and turns a bad quarter into a
      * straight line.
      *
-     * Instalments only. Fines are a different thing and charting them together
-     * would be the one addition this platform does not make.
+     * INSTALMENTS AND FINES, SIDE BY SIDE AND NEVER SUMMED. Two figures per
+     * month is comparison, which is allowed and useful - "are penalties growing
+     * against subscriptions?" is a real question about an association's health.
+     * One figure per month would be the addition this platform does not make.
      *
-     * @return list<array{month: string, label: string, instalments: string}>
+     * @return list<array{month: string, label: string, instalments: string, fines: string}>
      */
     private function collectedByMonth(): array
     {
@@ -1036,6 +1045,7 @@ class ReportController extends Controller
                 'month' => $month->format('Y-m'),
                 'label' => $month->format('M'),
                 'instalments' => '0.00',
+                'fines' => '0.00',
             ];
         }
 
@@ -1049,7 +1059,8 @@ class ReportController extends Controller
             )
             ->selectRaw(
                 "DATE_FORMAT(COALESCE(payment_infos.payment_date, payment_infos.created_at), '%Y-%m') as month, "
-                .'SUM(payment_info_items.amount) as instalments'
+                .'SUM(payment_info_items.amount) as instalments, '
+                .'SUM(payment_info_items.fine_amount) as fines'
             )
             ->groupBy('month')
             ->get();
@@ -1057,6 +1068,7 @@ class ReportController extends Controller
         foreach ($rows as $row) {
             if (isset($months[$row->month])) {
                 $months[$row->month]['instalments'] = $this->money($row->instalments);
+                $months[$row->month]['fines'] = $this->money($row->fines);
             }
         }
 

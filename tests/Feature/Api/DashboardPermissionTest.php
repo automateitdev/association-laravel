@@ -22,9 +22,15 @@ use Tests\TenantTestCase;
  * collections, its total arrears and the approval backlog, none of which it may
  * reach by any other route.
  *
- * A dashboard figure is the report behind it, smaller. So each block asks for
- * the permission that grants that information in full elsewhere, and this is
- * where that holds.
+ * ONE PERMISSION PER CARD, and deliberately NOT the report permissions. The
+ * first fix gated each block on the permission that owns the report behind it -
+ * `members.view`, `reports.due` - which ties two different questions together:
+ * whether somebody may see a COUNT, and whether they may open the register
+ * behind it. A counter clerk who should see "2 members to admit" would have had
+ * to be handed the whole register to get it.
+ *
+ * So an association composes its own landing page per role, and a card can be
+ * shown to somebody who cannot open what it counts.
  */
 class DashboardPermissionTest extends TenantTestCase
 {
@@ -73,11 +79,10 @@ class DashboardPermissionTest extends TenantTestCase
     // --------------------------------------------------------------- the leak
 
     /**
-     * The seeded operator: `dashboard.view` and share transfer, nothing more.
+     * `dashboard.view` alone opens the page and fills none of it.
      *
-     * This is the account the old endpoint handed the association's finances
-     * to. It reaches the screen - that is what `dashboard.view` is for - and
-     * finds none of the figures on it.
+     * The permission that reaches the screen carries no figures with it, which
+     * is the property the whole model rests on.
      */
     public function test_an_account_with_only_dashboard_view_sees_no_figures(): void
     {
@@ -91,14 +96,14 @@ class DashboardPermissionTest extends TenantTestCase
         self::assertSame([], $response->json('data'));
     }
 
-    /** Each block needs the permission that owns the report behind it. */
+    /** One permission per card, and each one brings exactly its own. */
     public function test_each_block_needs_its_own_permission(): void
     {
         foreach ([
-            'members' => 'members.view',
-            'collections' => 'reports.paid',
-            'outstanding' => 'reports.due',
-            'approvals' => 'payments.view',
+            'members' => 'dashboard.members',
+            'collections' => 'dashboard.collections',
+            'outstanding' => 'dashboard.outstanding',
+            'approvals' => 'dashboard.approvals',
         ] as $block => $permission) {
             $token = $this->tokenWith(['dashboard.view', $permission]);
 
@@ -112,10 +117,10 @@ class DashboardPermissionTest extends TenantTestCase
         }
     }
 
-    /** Reading the register does not reveal what the association is owed. */
+    /** The member counts do not carry the money with them. */
     public function test_member_counts_do_not_carry_the_money_with_them(): void
     {
-        $token = $this->tokenWith(['dashboard.view', 'members.view']);
+        $token = $this->tokenWith(['dashboard.view', 'dashboard.members']);
 
         $response = $this->dashboard($token)->assertStatus(200);
 
@@ -152,9 +157,58 @@ class DashboardPermissionTest extends TenantTestCase
     /** And the screen itself is still behind `dashboard.view`. */
     public function test_an_account_without_dashboard_view_is_refused(): void
     {
-        $token = $this->tokenWith(['members.view']);
+        $token = $this->tokenWith(['dashboard.members']);
 
         $this->dashboard($token)->assertStatus(403);
+    }
+
+    /**
+     * SEEING A COUNT IS NOT BEING ABLE TO OPEN IT, which is the point of
+     * splitting these off from the report permissions.
+     *
+     * An account with `dashboard.members` and no `members.view` gets the
+     * figures and is still refused the register - exactly the arrangement a
+     * cashier's role wants, and impossible while the cards were gated on the
+     * report permissions.
+     */
+    public function test_a_card_can_be_visible_to_somebody_who_cannot_open_it(): void
+    {
+        $token = $this->tokenWith(['dashboard.view', 'dashboard.members', 'dashboard.approvals']);
+
+        $this->dashboard($token)
+            ->assertStatus(200)
+            ->assertJsonPath('meta.visible', ['members', 'approvals']);
+
+        $this->withHeaders($this->headers($token))
+            ->getJson('/api/v1/staff/members')
+            ->assertStatus(403);
+    }
+
+    /**
+     * The seeded operator gets the two cards a counter clerk works from.
+     *
+     * This is the role the old endpoint handed the association's finances to.
+     * It now sees what is waiting and who is unadmitted, and no money at all.
+     */
+    public function test_the_seeded_operator_sees_the_queue_and_the_register_counts(): void
+    {
+        $token = $this->inTenant(function () {
+            app(TenantSeedService::class)->seedAll();
+
+            $user = User::create([
+                'name' => 'Counter',
+                'email' => 'dashoperator@assoc.test',
+                'password' => 'secret-password',
+            ]);
+            $user->assignRole('operator');
+
+            return $user->createToken('test', $user->getAllPermissions()->pluck('name')->all())
+                ->plainTextToken;
+        });
+
+        $this->dashboard($token)
+            ->assertStatus(200)
+            ->assertJsonPath('meta.visible', ['members', 'approvals']);
     }
 
     // ------------------------------------------------------- what it now says
@@ -168,7 +222,7 @@ class DashboardPermissionTest extends TenantTestCase
      */
     public function test_collections_carry_this_month_and_a_six_month_series(): void
     {
-        $token = $this->tokenWith(['dashboard.view', 'reports.paid']);
+        $token = $this->tokenWith(['dashboard.view', 'dashboard.collections']);
 
         $response = $this->dashboard($token)->assertStatus(200);
 
@@ -186,7 +240,11 @@ class DashboardPermissionTest extends TenantTestCase
 
         foreach ($collections['by_month'] as $month) {
             self::assertMatchesRegularExpression('/^\d{4}-\d{2}$/', $month['month']);
+
+            // Both series, side by side. Never a third field adding them up.
             self::assertMatchesRegularExpression('/^\d+\.\d{2}$/', $month['instalments']);
+            self::assertMatchesRegularExpression('/^\d+\.\d{2}$/', $month['fines']);
+            self::assertSame(['month', 'label', 'instalments', 'fines'], array_keys($month));
         }
 
         // Oldest first, so a chart drawn left to right runs forwards in time.
@@ -200,7 +258,11 @@ class DashboardPermissionTest extends TenantTestCase
     /** Money leaves as a decimal string, here as everywhere. */
     public function test_every_figure_is_a_string_not_a_float(): void
     {
-        $token = $this->tokenWith(['dashboard.view', 'reports.paid', 'reports.due']);
+        $token = $this->tokenWith([
+            'dashboard.view',
+            'dashboard.collections',
+            'dashboard.outstanding',
+        ]);
 
         $data = $this->dashboard($token)->assertStatus(200)->json('data');
 

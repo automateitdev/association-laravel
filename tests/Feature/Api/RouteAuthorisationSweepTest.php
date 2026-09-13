@@ -150,6 +150,20 @@ class RouteAuthorisationSweepTest extends TestCase
         'GET api/v1/me/documents/{slot}',
 
         /*
+         * And the same three reads for the member's own NOMINEE's documents.
+         * Reads of the caller's own record, exactly as above - the resolver
+         * takes the nominee from the authenticated member and refuses any
+         * caller that is not a Member, so there is no id to get wrong.
+         *
+         * The WRITE beside them - POST api/v1/me/nominee-documents - is not
+         * here and must not be. It carries
+         * `ability:member.profile.request-change`, because that is what it is.
+         */
+        'GET api/v1/me/nominee-documents',
+        'GET api/v1/me/nominee-documents/{slot}',
+        'GET api/v1/me/nominee-documents/{slot}/pending',
+
+        /*
          * And the member's own pending submission, so they can see what they
          * sent while it waits. Still a read of their own record.
          *

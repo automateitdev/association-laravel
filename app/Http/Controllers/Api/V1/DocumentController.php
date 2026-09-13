@@ -89,6 +89,59 @@ class DocumentController extends Controller
         return $this->stream($this->self($request), $slot, Document::STATUS_PENDING);
     }
 
+    // --------------------------------------------------- the member's nominee
+
+    /**
+     * A MEMBER'S OWN NOMINEE'S DOCUMENTS - the legacy form's second tab.
+     *
+     * The legacy uploads the nominee's photograph and NID with the rest of the
+     * form, and this had no counterpart: every nominee document route is
+     * behind `nominees.manage`, a staff permission. So a member could NAME
+     * their nominee here and not attach the NID that proves who they are,
+     * which is most of the point of recording one.
+     *
+     * THE SAME QUEUE AS THEIR OWN DOCUMENTS, not the profile-update row the
+     * legacy uses. A photograph is decided by LOOKING at it: the review screen
+     * already shows the file and already distinguishes a nominee's from a
+     * member's. Putting images inside a text change-set would have an officer
+     * approving a filename.
+     *
+     * THE FIRST NOMINEE, matching the form that names them. The legacy has
+     * exactly one; staff keep the surface for several.
+     */
+    public function myNomineeIndex(Request $request): JsonResponse
+    {
+        return response()->json(['data' => $this->documents->list($this->selfNominee($request))]);
+    }
+
+    public function myNomineeSubmit(Request $request): JsonResponse
+    {
+        $nominee = $this->selfNominee($request);
+
+        $validated = $request->validate([
+            'slot' => ['required', 'string', 'max:40'],
+            'file' => ['required', 'file'],
+        ]);
+
+        try {
+            $this->documents->submit($nominee, $validated['slot'], $request->file('file'));
+        } catch (DomainException $e) {
+            throw new ApiException('DOCUMENT_REJECTED', $e->getMessage(), 422);
+        }
+
+        return response()->json(['data' => $this->documents->list($nominee)], 201);
+    }
+
+    public function myNomineeShow(Request $request, string $slot): StreamedResponse
+    {
+        return $this->stream($this->selfNominee($request), $slot);
+    }
+
+    public function myNomineePendingShow(Request $request, string $slot): StreamedResponse
+    {
+        return $this->stream($this->selfNominee($request), $slot, Document::STATUS_PENDING);
+    }
+
     // ------------------------------------------------------------------- staff
 
     public function index(Request $request, int $member): JsonResponse
@@ -302,6 +355,27 @@ class DocumentController extends Controller
     // --------------------------------------------------------- who may see what
 
     /** The member making the request. Staff have no "own" documents. */
+    /**
+     * The caller's own nominee, or a refusal that says what to do about it.
+     *
+     * NOT A 404. "No such thing" is what a wrong id deserves; this is a member
+     * who has not named anybody yet, and the answer they need is "name them
+     * first" - which is a different screen, not a missing page. The app shows
+     * the nominee's document slots inside the section that names them, so the
+     * two are already next to each other.
+     */
+    private function selfNominee(Request $request): Nominee
+    {
+        $member = $this->self($request);
+
+        return $member->nominees()->orderBy('id')->first()
+            ?? throw new ApiException(
+                'NO_NOMINEE',
+                'Name your nominee first, then you can send their documents.',
+                422,
+            );
+    }
+
     private function self(Request $request): Member
     {
         $account = $request->user();

@@ -162,6 +162,31 @@ Route::prefix('v1')->group(function () {
 
         Route::get('/me/documents/{slot}/pending', [DocumentController::class, 'mePendingShow']);
 
+        /*
+         * THE MEMBER'S OWN NOMINEE'S DOCUMENTS - the legacy form's second tab,
+         * which uploads their photograph and NID alongside the member's own.
+         *
+         * Every other nominee document route is behind `nominees.manage`, so
+         * until now a member could name their nominee and not attach the NID
+         * that proves who they are.
+         *
+         * Same shape as the member's own above, and for the same reasons: the
+         * reads carry no ability because they return the caller's own record
+         * and nothing else, and the WRITE carries
+         * `member.profile.request-change` because it is one - nothing the
+         * association holds changes until an officer approves it on the
+         * document-review screen, which already tells a nominee's file from a
+         * member's.
+         */
+        Route::get('/me/nominee-documents', [DocumentController::class, 'myNomineeIndex']);
+        Route::get('/me/nominee-documents/{slot}', [DocumentController::class, 'myNomineeShow']);
+        Route::get(
+            '/me/nominee-documents/{slot}/pending',
+            [DocumentController::class, 'myNomineePendingShow']
+        );
+        Route::post('/me/nominee-documents', [DocumentController::class, 'myNomineeSubmit'])
+            ->middleware('ability:member.profile.request-change');
+
         // ---- member surface --------------------------------------------
         //
         // Guarded by token abilities. A member token carries only member.*

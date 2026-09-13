@@ -406,6 +406,76 @@ class MemberNomineeDocumentTest extends TenantTestCase
         });
     }
 
+    // ---- what the officer deciding it can see -----------------------------
+
+    /**
+     * AN OFFICER SEES THE FILE ON THE REQUEST THEY ARE DECIDING.
+     *
+     * Without this they would approve "add Firoza Khatun as sister" on the
+     * strength of the name alone, with the NID proving it sitting on another
+     * screen under a queue they had no reason to connect to this one.
+     */
+    public function test_the_approval_screen_lists_what_was_attached_to_the_request(): void
+    {
+        $member = $this->member();
+        $token = $this->memberToken($member);
+
+        $this->postJson('/api/v1/me/profile-updates', [
+            'nominee' => ['name' => 'Firoza Khatun', 'relation' => 'Sister'],
+        ], $this->headers($token))->assertStatus(201);
+
+        $this->post('/api/v1/me/nominee-documents', [
+            'slot' => 'nid_front',
+            'file' => $this->photo(),
+        ], $this->headers($token))->assertStatus(201);
+
+        $response = $this->getJson('/api/v1/staff/profile-updates', $this->headers($this->staffToken()))
+            ->assertOk();
+
+        $attachments = $response->json('data.0.attachments');
+
+        self::assertCount(1, $attachments, 'The officer cannot see what came with the request.');
+        self::assertSame('nid_front', $attachments[0]['slot']);
+        self::assertSame('NID front', $attachments[0]['label']);
+    }
+
+    /**
+     * AND IT IS LABELLED AS A NOMINEE'S IN THE DOCUMENT QUEUE, not an unnamed
+     * member's.
+     *
+     * The queue asked only whether the owner was a Nominee, so a file attached
+     * to a pending request fell through to 'member' and showed a blank where
+     * the person should be - on the one document an officer most needs to
+     * identify.
+     */
+    public function test_a_request_attachment_is_labelled_with_the_nominee_it_names(): void
+    {
+        $member = $this->member();
+        $token = $this->memberToken($member);
+
+        $this->postJson('/api/v1/me/profile-updates', [
+            'nominee' => ['name' => 'Firoza Khatun'],
+        ], $this->headers($token))->assertStatus(201);
+
+        $this->post('/api/v1/me/nominee-documents', [
+            'slot' => 'image',
+            'file' => $this->photo(),
+        ], $this->headers($token))->assertStatus(201);
+
+        $row = collect(
+            $this->getJson('/api/v1/staff/document-reviews', $this->headers($this->staffToken()))
+                ->assertOk()
+                ->json('data')
+        )->firstWhere('slot', 'image');
+
+        self::assertSame('nominee', $row['owner_type']);
+        self::assertSame('Firoza Khatun', $row['owner_name']);
+
+        // Said plainly, because it changes what the decision means: this file
+        // attaches to a nominee that only exists if the request is approved.
+        self::assertTrue($row['awaiting_request']);
+    }
+
     // ---- what a member still cannot do ------------------------------------
 
     /**

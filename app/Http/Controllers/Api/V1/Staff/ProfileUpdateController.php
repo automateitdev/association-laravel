@@ -321,9 +321,39 @@ class ProfileUpdateController extends Controller
             ];
         }
 
+        /*
+         * WHAT CAME WITH IT.
+         *
+         * A member naming their first nominee attaches the NID to the REQUEST
+         * - there is nobody to attach it to yet - and an officer deciding the
+         * name could not see it. They would have approved "add Firoza Khatun
+         * as sister" on the strength of the name alone, with the document
+         * proving it sitting on another screen under a queue they had no
+         * reason to connect to this.
+         *
+         * The file itself is not inlined: it is fetched from the review
+         * endpoint that already streams it, which keeps this list cheap and
+         * keeps one route serving one file.
+         */
+        $attachments = Document::query()
+            ->where('documentable_type', MemberProfileUpdate::class)
+            ->where('documentable_id', $update->id)
+            ->get()
+            ->map(fn (Document $document) => [
+                'id' => $document->id,
+                'slot' => $document->slot,
+                'label' => DocumentService::NOMINEE_SLOTS[$document->slot] ?? $document->slot,
+                'status' => $document->status,
+                'original_name' => $document->original_name,
+                'mime' => $document->mime,
+                'size' => $document->size,
+            ])
+            ->all();
+
         return [
             'id' => $update->id,
             'member_id' => $update->member_id,
+            'attachments' => $attachments,
             'member_name' => $member?->name,
             'member_mobile' => $member?->mobile,
             'fields' => $fields,

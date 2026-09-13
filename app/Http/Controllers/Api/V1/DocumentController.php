@@ -212,9 +212,39 @@ class DocumentController extends Controller
 
                 // Who it belongs to, and whether that is a member or one of
                 // their nominees - the officer needs both to judge it.
-                'owner_type' => $document->documentable instanceof Nominee ? 'nominee' : 'member',
+                /*
+                 * WHOSE DOCUMENT THIS IS, and a request counts as a nominee's.
+                 *
+                 * This asked only whether the owner was a Nominee, so a file
+                 * attached to a pending request - which is what a member
+                 * naming their FIRST nominee produces - fell through to
+                 * 'member' and showed an officer an unnamed member's NID. The
+                 * slots are nominee slots; the owner is the asking rather
+                 * than the person, and that is a difference in TIMING, not in
+                 * what the file is.
+                 */
+                'owner_type' => $document->documentable instanceof Member ? 'member' : 'nominee',
                 'owner_id' => $document->documentable_id,
-                'owner_name' => $document->documentable?->name,
+                /*
+                 * A request has no name of its own - the nominee it names is
+                 * not a row yet - so it answers with the name it is asking
+                 * for. Without this an officer sees a blank where the person
+                 * should be, on the one document they most need to identify.
+                 */
+                'owner_name' => $document->documentable instanceof MemberProfileUpdate
+                    ? ($document->documentable->changes[MemberProfileUpdate::NOMINEE_PREFIX.'name'] ?? null)
+                    : $document->documentable?->name,
+
+                /*
+                 * Said plainly, because it changes what the decision MEANS. A
+                 * document on a nominee replaces what the association holds; a
+                 * document on a request will attach to a nominee that only
+                 * exists if the request is also approved. An officer
+                 * approving this one and refusing that one leaves a file
+                 * pointing at nobody - which the refusal path deletes, and
+                 * which they should be told about rather than discover.
+                 */
+                'awaiting_request' => $document->documentable instanceof MemberProfileUpdate,
 
                 'original_name' => $document->original_name,
                 'mime' => $document->mime,

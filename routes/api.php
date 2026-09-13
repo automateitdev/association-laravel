@@ -284,6 +284,16 @@ Route::prefix('v1')->group(function () {
                 ->middleware('permission:members.view');
             Route::post('/members', [MemberController::class, 'store'])
                 ->middleware('permission:members.create');
+            /*
+             * By the number the association uses, for the read-only profile.
+             *
+             * ABOVE the {member} route, or "by-number" is matched as a member
+             * id and the lookup never runs - the same ordering trap the
+             * invoice route has.
+             */
+            Route::get('/members/by-number/{membershipNo}', [MemberController::class, 'showByNumber'])
+                ->middleware('permission:members.view');
+
             Route::get('/members/{member}', [MemberController::class, 'show'])
                 ->middleware('permission:members.view');
 

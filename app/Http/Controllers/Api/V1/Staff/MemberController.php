@@ -14,10 +14,10 @@ use App\Reports\ExportsListings;
 use App\Reports\MemberDocumentRenderer;
 use App\Reports\MemberProfileRenderer;
 use App\Reports\Report;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Validation\Rule;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -320,6 +320,34 @@ class MemberController extends Controller
     public function show(int $member): JsonResponse
     {
         return response()->json(['data' => $this->shape($this->find($member), detailed: true)]);
+    }
+
+    /**
+     * The same record, found by the number the association uses for it.
+     *
+     * WHY THIS EXISTS RATHER THAN JUST USING THE ID. A membership number is
+     * what an office says out loud, writes on a receipt and searches by; the
+     * primary key is a row counter that means nothing to anybody and puts
+     * "member 31" in a URL somebody may paste into an email. The read-only
+     * profile is reached this way so the address says which member it is.
+     *
+     * NOT a second way to reach everything. Writes stay on the id: a
+     * membership number is assigned by staff and could in principle be
+     * corrected, and a PUT addressed to a mutable key is a PUT that can land
+     * on the wrong record after somebody fixes a typo.
+     */
+    public function showByNumber(string $membershipNo): JsonResponse
+    {
+        $member = Member::query()
+            ->with(['associatorInfo', 'introducedBy.associatorInfo'])
+            ->whereHas(
+                'associatorInfo',
+                fn ($q) => $q->where('membership_no', $membershipNo)
+            )
+            ->first()
+            ?? throw ApiException::notFound('Member');
+
+        return response()->json(['data' => $this->shape($member, detailed: true)]);
     }
 
     public function update(Request $request, int $member): JsonResponse

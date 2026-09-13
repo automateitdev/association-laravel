@@ -129,6 +129,34 @@ class ProfileController extends Controller
             ],
             'introduced_by_name' => ['sometimes', 'nullable', 'string', 'max:255'],
             'introduced_by_mobile' => ['sometimes', 'nullable', 'string', 'max:20'],
+
+            /*
+             * THE NOMINEE, in the same request and the same pending row.
+             *
+             * The legacy carries `name` and `nominee_name` side by side in
+             * `member_profile_updates` and the office decides them together,
+             * which is the right shape for what is being decided: changing
+             * your nominee is one act. Two queue entries an officer could
+             * approve separately would let a nominee's name through while
+             * their NID was refused.
+             *
+             * Sent nested for the app's sake - the form has a section for it -
+             * and flattened to `nominee_*` before it is stored, so `changes`
+             * stays a flat map the staff screen and the applier already
+             * understand.
+             */
+            'nominee' => ['sometimes', 'array'],
+            'nominee.name' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'nominee.relation' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'nominee.father_name' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'nominee.mother_name' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'nominee.gender' => ['sometimes', 'nullable', 'in:male,female,other'],
+            'nominee.birth_date' => ['sometimes', 'nullable', 'date', 'before:today'],
+            'nominee.nid' => ['sometimes', 'nullable', 'string', 'max:50'],
+            'nominee.mobile' => ['sometimes', 'nullable', 'string', 'max:20'],
+            'nominee.country_code' => ['sometimes', 'nullable', 'string', 'size:2', 'alpha'],
+            'nominee.address' => ['sometimes', 'nullable', 'string', 'max:2000'],
+            'nominee.profession' => ['sometimes', 'nullable', 'string', 'max:2000'],
         ]);
 
         /*
@@ -153,11 +181,61 @@ class ProfileController extends Controller
          * and an officer would have to read it to discover there is nothing in
          * it.
          */
+        $nominee = $validated['nominee'] ?? [];
+        unset($validated['nominee']);
+
         $changes = array_filter(
             $validated,
             fn ($value, $field) => (string) $value !== (string) $member->{$field},
             ARRAY_FILTER_USE_BOTH
         );
+
+        /*
+         * The nominee's half, diffed against the one already on file.
+         *
+         * THE FIRST NOMINEE, and only the first. The legacy member form has
+         * exactly one - `nominee_info`, singular, against a singular
+         * `$member->nominee` - while this schema lets STAFF record several.
+         * So the member's own form maintains theirs and leaves any others
+         * alone, rather than a screen that silently edits whichever row came
+         * back first.
+         *
+         * A member with no nominee yet diffs against nothing, so every field
+         * they fill in counts as a change - which is what "add a nominee"
+         * has to mean.
+         */
+        $existing = $member->nominees()->orderBy('id')->first();
+
+        foreach ($nominee as $field => $value) {
+            if ((string) $value !== (string) ($existing?->{$field} ?? '')) {
+                $changes[MemberProfileUpdate::NOMINEE_PREFIX.$field] = $value;
+            }
+        }
+
+        /*
+         * A NOMINEE CANNOT BE CREATED WITHOUT A NAME, and this is where that
+         * is said - not at approval.
+         *
+         * `nominees.name` is NOT NULL. A member with no nominee yet who fills
+         * in a relation and a mobile and nothing else would file a request an
+         * officer reads, believes, and approves - and the insert then fails
+         * with a database error, on the officer's screen, about the member's
+         * form. The member is told nothing and the queue entry is left
+         * half-decided.
+         *
+         * Only when there is no nominee yet: a member who already has one and
+         * is correcting a single field is not naming anybody again.
+         */
+        $addingNominee = $existing === null
+            && MemberProfileUpdate::nomineeChanges($changes) !== [];
+
+        if ($addingNominee && trim((string) ($nominee['name'] ?? '')) === '') {
+            throw new ApiException(
+                'NOMINEE_NAME_REQUIRED',
+                'A nominee needs a name.',
+                422,
+            );
+        }
 
         if ($changes === []) {
             throw new ApiException(

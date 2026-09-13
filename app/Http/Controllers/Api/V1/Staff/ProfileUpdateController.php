@@ -94,7 +94,43 @@ class ProfileUpdateController extends Controller
 
                 $before = array_intersect_key($member->only(array_keys($changes)), $changes);
 
-                $member->update($changes);
+                if ($changes !== []) {
+                    $member->update($changes);
+                }
+
+                /*
+                 * THE NOMINEE, from the same row and the same decision.
+                 *
+                 * Filtered against NOMINEE_ALLOWED here as well as on the way
+                 * in, for the reason given above: a request could have been
+                 * written when the list was wider, and what is applied is what
+                 * matters.
+                 *
+                 * updateOrCreate on the FIRST nominee, because "add" and
+                 * "change" are the same act from the member's side - they fill
+                 * in the section and ask. A member with no nominee yet gets
+                 * one; a member with several keeps the rest, which staff
+                 * manage separately.
+                 */
+                $nomineeChanges = MemberProfileUpdate::nomineeChanges($record->changes);
+
+                if ($nomineeChanges !== []) {
+                    $nominee = $member->nominees()->orderBy('id')->first();
+
+                    $before += $nominee
+                        ? collect($nomineeChanges)
+                            ->mapWithKeys(fn ($_, string $field) => [
+                                MemberProfileUpdate::NOMINEE_PREFIX.$field => $nominee->{$field},
+                            ])
+                            ->all()
+                        : [];
+
+                    if ($nominee) {
+                        $nominee->update($nomineeChanges);
+                    } else {
+                        $member->nominees()->create($nomineeChanges);
+                    }
+                }
             }
 
             $record->update([

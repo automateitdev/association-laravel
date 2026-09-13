@@ -27,7 +27,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class MemberProfileUpdate extends Model
 {
     public const STATUS_PENDING = 'pending';
+
     public const STATUS_APPROVED = 'approved';
+
     public const STATUS_REJECTED = 'rejected';
 
     /**
@@ -90,6 +92,75 @@ class MemberProfileUpdate extends Model
         'introduced_by_name',
         'introduced_by_mobile',
     ];
+
+    /**
+     * The prefix nominee fields wear inside `changes`.
+     *
+     * ONE PENDING ROW COVERS BOTH, which is how the legacy does it: its
+     * `member_profile_updates` table carries `name` and `nominee_name`,
+     * `nid` and `nominee_nid`, side by side, and the office decides them
+     * together. That is the right shape for the thing being decided - a
+     * member changing their nominee is one act, and splitting it into two
+     * queue entries an officer could approve separately would let a nominee's
+     * name be accepted while their NID was refused.
+     *
+     * Flat prefixed keys rather than a nested object, so `changes` stays a
+     * map of field to value: the staff screen lists the keys, the applier
+     * walks them, and neither has to learn a second shape.
+     */
+    public const NOMINEE_PREFIX = 'nominee_';
+
+    /**
+     * What a member may ask to change about their nominee.
+     *
+     * The legacy member form's second tab, mapped onto this schema -
+     * `relation_with_user` is `relation` here, `professional_details` is
+     * `profession`, and `permanent_address` is `address`.
+     *
+     * `share_percentage` IS NOT HERE. It is not on the legacy form either,
+     * and it is the kind of field that decides who receives what: a member
+     * proposing it is reasonable, but it has never been collected this way
+     * and inventing it under "as it is in legacy" would be adding a feature
+     * while claiming parity. Staff set it.
+     */
+    public const NOMINEE_ALLOWED = [
+        'name',
+        'relation',
+        'father_name',
+        'mother_name',
+        'gender',
+        'birth_date',
+        'nid',
+        'mobile',
+        'country_code',
+        'address',
+        'profession',
+    ];
+
+    /**
+     * The nominee half of a change set, unprefixed.
+     *
+     * @param  array<string, mixed>  $changes
+     * @return array<string, mixed>
+     */
+    public static function nomineeChanges(array $changes): array
+    {
+        $out = [];
+
+        foreach ($changes as $key => $value) {
+            if (! str_starts_with($key, self::NOMINEE_PREFIX)) {
+                continue;
+            }
+
+            $field = substr($key, strlen(self::NOMINEE_PREFIX));
+
+            if (in_array($field, self::NOMINEE_ALLOWED, true)) {
+                $out[$field] = $value;
+            }
+        }
+
+        return $out;
+    }
 
     protected $fillable = [
         'member_id',

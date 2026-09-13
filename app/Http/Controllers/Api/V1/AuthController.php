@@ -233,6 +233,34 @@ class AuthController extends Controller
                 'editable' => collect(MemberProfileUpdate::ALLOWED)
                     ->mapWithKeys(fn (string $field) => [$field => $account->{$field}])
                     ->all(),
+
+                /*
+                 * THE NOMINEE ON FILE, so the form's second section opens
+                 * filled in rather than blank.
+                 *
+                 * `null` means there is none yet, which the form needs to
+                 * distinguish from one whose fields happen to be empty: the
+                 * first is "add your nominee" and the second is "correct
+                 * these". Without it a member cannot tell whether the office
+                 * already holds a nominee and retypes one that is there.
+                 *
+                 * THE FIRST, matching what the member's own form maintains -
+                 * the legacy has exactly one and staff keep the surface for
+                 * several. Driven by NOMINEE_ALLOWED at both ends, so the form
+                 * and the endpoint cannot drift into showing a field nobody
+                 * may change.
+                 */
+                'nominee' => (function () use ($account) {
+                    $nominee = $account->nominees()->orderBy('id')->first();
+
+                    if (! $nominee) {
+                        return null;
+                    }
+
+                    return collect(MemberProfileUpdate::NOMINEE_ALLOWED)
+                        ->mapWithKeys(fn (string $field) => [$field => $nominee->{$field}])
+                        ->all();
+                })(),
             ];
         }
 

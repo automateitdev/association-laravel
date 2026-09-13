@@ -8,6 +8,7 @@ use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Models\Tenant\FeeAssign;
 use App\Models\Tenant\Member;
+use App\Models\Tenant\MemberPreference;
 use App\Models\Tenant\MemberProfileUpdate;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
@@ -260,6 +261,40 @@ class AuthController extends Controller
                     return collect(MemberProfileUpdate::NOMINEE_ALLOWED)
                         ->mapWithKeys(fn (string $field) => [$field => $nominee->{$field}])
                         ->all();
+                })(),
+
+                /*
+                 * THE HOUSING PREFERENCES ON FILE, one entry per project -
+                 * ALL THREE, answered or not.
+                 *
+                 * The legacy form shows three project panels whether or not
+                 * the member has said anything about any of them, and an
+                 * absent key would make "you have not answered this project"
+                 * indistinguishable from "the app does not know about this
+                 * project". So every project in PROJECTS is here, with nulls
+                 * where there is no answer.
+                 */
+                'preferences' => (function () use ($account) {
+                    $held = MemberPreference::query()
+                        ->where('member_id', $account->id)
+                        ->get()
+                        ->keyBy('project');
+
+                    $out = [];
+
+                    foreach (array_keys(MemberPreference::PROJECTS) as $project) {
+                        $row = $held->get($project);
+
+                        $out[$project] = collect(MemberProfileUpdate::PREFERENCE_ALLOWED)
+                            ->mapWithKeys(fn (string $field) => [$field => $row?->{$field}])
+                            ->all();
+
+                        // Never null, so the form can bind a list to it
+                        // without every screen guarding the same thing.
+                        $out[$project]['areas'] ??= [];
+                    }
+
+                    return $out;
                 })(),
             ];
         }

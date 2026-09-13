@@ -120,47 +120,10 @@ class MemberPreferenceController extends Controller
     /** The districts and areas a client can offer, so nothing is typed free-hand. */
     public function options(): JsonResponse
     {
-        return response()->json([
-            'data' => [
-                'projects' => MemberPreference::PROJECTS,
-                'budgets' => MemberPreference::BUDGETS,
-                'loan_percentages' => MemberPreference::LOAN_PERCENTAGES,
-
-                /*
-                 * Grouped by division, which is how the country is organised
-                 * and how somebody scans for their own district. Flat and
-                 * alphabetical puts Bandarban beside Barguna, five hundred
-                 * kilometres apart.
-                 */
-                'districts' => Districts::BY_DIVISION,
-
-                /*
-                 * Areas of Dhaka, from what members actually chose. NOT a
-                 * closed list - the API accepts any string for the two Dhaka
-                 * projects, because an association's next site will be
-                 * somewhere nobody has typed yet and a whitelist would have to
-                 * be edited before anyone could say so.
-                 */
-                'dhaka_areas' => self::DHAKA_AREAS,
-            ],
-        ]);
+        // The lists live on the model, so this screen and the member's own
+        // form cannot drift into offering different budgets.
+        return response()->json(['data' => MemberPreference::formOptions()]);
     }
-
-    /**
-     * What members chose in the legacy data, as suggestions.
-     *
-     * @var list<string>
-     */
-    private const DHAKA_AREAS = [
-        'Uttara',
-        'Mirpur',
-        'Mohammadpur',
-        'Basundhara/Purbachal',
-        'Amin Bazar',
-        'Savar',
-        'Keraniganj',
-        'Other',
-    ];
 
     /**
      * @return array<string, mixed>

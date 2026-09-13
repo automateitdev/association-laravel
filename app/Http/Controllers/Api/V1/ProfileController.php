@@ -7,7 +7,9 @@ namespace App\Http\Controllers\Api\V1;
 use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Models\Tenant\Member;
+use App\Models\Tenant\MemberPreference;
 use App\Models\Tenant\MemberProfileUpdate;
+use App\Support\Districts;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -157,7 +159,70 @@ class ProfileController extends Controller
             'nominee.country_code' => ['sometimes', 'nullable', 'string', 'size:2', 'alpha'],
             'nominee.address' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'nominee.profession' => ['sometimes', 'nullable', 'string', 'max:2000'],
+
+            /*
+             * THE HOUSING PREFERENCES - the legacy form's third tab, three
+             * projects side by side.
+             *
+             * Keyed by project so the app sends what it renders, and flattened
+             * to `preference_<project>.<field>` before storage. The rules are
+             * the same ones the staff endpoint applies, because it is the same
+             * question being answered by a different person.
+             */
+            'preferences' => ['sometimes', 'array'],
+            'preferences.*.areas' => ['sometimes', 'nullable', 'array', 'max:10'],
+            'preferences.*.flat_size_sft' => [
+                'sometimes', 'nullable', 'integer', 'min:100', 'max:20000',
+            ],
+            'preferences.*.budget' => [
+                'sometimes', 'nullable', Rule::in(array_keys(MemberPreference::BUDGETS)),
+            ],
+            'preferences.*.loan_percentage' => [
+                'sometimes', 'nullable', Rule::in(MemberPreference::LOAN_PERCENTAGES),
+            ],
+            'preferences.*.flats_wanted' => ['sometimes', 'nullable', 'integer', 'min:1', 'max:20'],
+            'preferences.*.introduced_by_member_id' => [
+                'sometimes', 'nullable', 'integer', 'exists:members,id',
+            ],
+            'preferences.*.introduced_by_name' => ['sometimes', 'nullable', 'string', 'max:255'],
         ]);
+
+        /*
+         * A DISTRICT IS CHOSEN; AN AREA IS TYPED, and the rule differs by
+         * project - so it cannot be expressed in the array above, which has
+         * one wildcard for all three.
+         *
+         * For `other_district` the areas ARE districts: 64 of them, fixed, so
+         * a value outside the list is a mistake worth refusing at the door.
+         * For the two Dhaka projects they are neighbourhoods, and the
+         * association's next site will be somewhere nobody has typed yet.
+         * The staff endpoint splits it the same way.
+         */
+        foreach ($request->input('preferences', []) as $project => $answer) {
+            if (! array_key_exists($project, MemberPreference::PROJECTS)) {
+                throw new ApiException(
+                    'UNKNOWN_PROJECT',
+                    "There is no project called [{$project}].",
+                    422,
+                );
+            }
+
+            foreach ($answer['areas'] ?? [] as $area) {
+                $valid = $project === 'other_district'
+                    ? in_array($area, Districts::all(), true)
+                    : is_string($area) && $area !== '' && mb_strlen($area) <= 100;
+
+                if (! $valid) {
+                    throw new ApiException(
+                        'UNKNOWN_AREA',
+                        $project === 'other_district'
+                            ? "[{$area}] is not a district."
+                            : 'An area name is required and must be under 100 characters.',
+                        422,
+                    );
+                }
+            }
+        }
 
         /*
          * A member cannot introduce themselves.
@@ -184,6 +249,9 @@ class ProfileController extends Controller
         $nominee = $validated['nominee'] ?? [];
         unset($validated['nominee']);
 
+        $preferencesInput = $validated['preferences'] ?? [];
+        unset($validated['preferences']);
+
         $changes = array_filter(
             $validated,
             fn ($value, $field) => (string) $value !== (string) $member->{$field},
@@ -209,6 +277,34 @@ class ProfileController extends Controller
         foreach ($nominee as $field => $value) {
             if ((string) $value !== (string) ($existing?->{$field} ?? '')) {
                 $changes[MemberProfileUpdate::NOMINEE_PREFIX.$field] = $value;
+            }
+        }
+
+        /*
+         * The preferences, diffed per project against the row on file.
+         *
+         * `areas` is a LIST, so it is compared as one rather than cast to a
+         * string: "Uttara, Mirpur" and "Mirpur, Uttara" are the same answer
+         * and a string comparison would file a change for reordering them.
+         */
+        $held = MemberPreference::query()
+            ->where('member_id', $member->id)
+            ->get()
+            ->keyBy('project');
+
+        foreach ($preferencesInput as $project => $answer) {
+            $row = $held->get($project);
+
+            foreach ($answer as $field => $value) {
+                $before = $row?->{$field};
+
+                $same = $field === 'areas'
+                    ? $this->sameAreas($before ?? [], $value ?? [])
+                    : (string) $value === (string) ($before ?? '');
+
+                if (! $same) {
+                    $changes[MemberProfileUpdate::preferenceKey($project, $field)] = $value;
+                }
             }
         }
 
@@ -270,5 +366,35 @@ class ProfileController extends Controller
         }
 
         return $account;
+    }
+
+    /**
+     * What the housing-preference section renders from.
+     *
+     * The same payload the staff screen gets, from the same place on the
+     * model - two lists of budgets built separately are two lists that
+     * disagree within a release.
+     */
+    public function preferenceOptions(): JsonResponse
+    {
+        return response()->json(['data' => MemberPreference::formOptions()]);
+    }
+
+    /**
+     * Two area lists holding the same places, in any order.
+     *
+     * Order is not an answer. A member who reordered "Uttara, Mirpur" into
+     * "Mirpur, Uttara" has changed nothing, and filing that as a change gives
+     * an officer a request to read with nothing in it.
+     *
+     * @param  list<string>  $before
+     * @param  list<string>  $after
+     */
+    private function sameAreas(array $before, array $after): bool
+    {
+        sort($before);
+        sort($after);
+
+        return $before === $after;
     }
 }

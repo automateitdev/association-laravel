@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models\Tenant;
 
+use App\Support\Districts;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
@@ -45,6 +46,61 @@ class MemberPreference extends Model
 
     /** What the form offers for a loan, `No` being 0. */
     public const LOAN_PERCENTAGES = [0, 25, 50, 75];
+
+    /**
+     * Areas of Dhaka, from what members actually chose in the legacy data.
+     *
+     * NOT A CLOSED LIST - suggestions. The API accepts any string for the two
+     * Dhaka projects, because an association's next site will be somewhere
+     * nobody has typed yet and a whitelist would have to be edited before
+     * anyone could say so. For `other_district` the areas ARE districts, and
+     * those are fixed; see Districts.
+     *
+     * HERE RATHER THAN ON A CONTROLLER, which is where it started. Both the
+     * staff screen and the member's own form need it, and a private const on
+     * the staff controller cannot be reached by the member's route without
+     * either copying it or reaching across - and a copied list is one that
+     * disagrees with itself within a release.
+     *
+     * @var list<string>
+     */
+    public const DHAKA_AREAS = [
+        'Uttara',
+        'Mirpur',
+        'Mohammadpur',
+        'Basundhara/Purbachal',
+        'Amin Bazar',
+        'Savar',
+        'Keraniganj',
+        'Other',
+    ];
+
+    /**
+     * Everything a form needs to render the three project panels.
+     *
+     * One method for both surfaces. The staff screen and the member's own
+     * form ask the same question of the same domain, and two payloads built
+     * separately are two payloads that drift.
+     *
+     * @return array<string, mixed>
+     */
+    public static function formOptions(): array
+    {
+        return [
+            'projects' => self::PROJECTS,
+            'budgets' => self::BUDGETS,
+            'loan_percentages' => self::LOAN_PERCENTAGES,
+
+            /*
+             * Grouped by division, which is how the country is organised and
+             * how somebody scans for their own district. Flat and
+             * alphabetical puts Bandarban beside Barguna, five hundred
+             * kilometres apart.
+             */
+            'districts' => Districts::BY_DIVISION,
+            'dhaka_areas' => self::DHAKA_AREAS,
+        ];
+    }
 
     protected $fillable = [
         'member_id',

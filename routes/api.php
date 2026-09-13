@@ -6,8 +6,8 @@ use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\DocumentController;
 use App\Http\Controllers\Api\V1\DuesController;
 use App\Http\Controllers\Api\V1\GatewayController;
-use App\Http\Controllers\Api\V1\PayflexCallbackController;
 use App\Http\Controllers\Api\V1\HealthController;
+use App\Http\Controllers\Api\V1\PayflexCallbackController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\PaymentDocumentController;
 use App\Http\Controllers\Api\V1\ProfileController;
@@ -18,15 +18,15 @@ use App\Http\Controllers\Api\V1\Staff\LedgerController;
 use App\Http\Controllers\Api\V1\Staff\MemberController;
 use App\Http\Controllers\Api\V1\Staff\MemberPreferenceController;
 use App\Http\Controllers\Api\V1\Staff\NomineeController;
-use App\Http\Controllers\Api\V1\Staff\SignatoryController;
 use App\Http\Controllers\Api\V1\Staff\PaymentApprovalController;
 use App\Http\Controllers\Api\V1\Staff\ProfileUpdateController;
 use App\Http\Controllers\Api\V1\Staff\ReportController;
-use App\Http\Controllers\Api\V1\Staff\ShareController;
 use App\Http\Controllers\Api\V1\Staff\RoleController;
+use App\Http\Controllers\Api\V1\Staff\SettingsController;
+use App\Http\Controllers\Api\V1\Staff\ShareController;
+use App\Http\Controllers\Api\V1\Staff\SignatoryController;
 use App\Http\Controllers\Api\V1\Staff\UserController;
 use App\Http\Controllers\Api\V1\Staff\VoucherController;
-use App\Http\Controllers\Api\V1\Staff\SettingsController;
 use App\Http\Controllers\Api\V1\TenantLookupController;
 use Illuminate\Support\Facades\Route;
 
@@ -121,6 +121,20 @@ Route::prefix('v1')->group(function () {
          */
         Route::get('/me/profile-updates', [ProfileController::class, 'index']);
         Route::post('/me/profile-updates', [ProfileController::class, 'store']);
+
+        /*
+         * The lists the housing-preference section of that form renders from -
+         * budgets, loan percentages, the 64 districts by division, and the
+         * Dhaka areas members have actually chosen.
+         *
+         * ON NO ABILITY BEYOND BEING SIGNED IN, unlike the staff copy at
+         * /staff/member-preferences/options. This is a list of districts and
+         * budget bands: it says nothing about any member, and gating it would
+         * mean a member who may file the form cannot render it. The staff
+         * route stays where it is because that screen is reached by a
+         * different permission set.
+         */
+        Route::get('/me/preference-options', [ProfileController::class, 'preferenceOptions']);
 
         /*
          * A member's own identity documents (parity P-10).

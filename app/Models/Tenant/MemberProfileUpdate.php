@@ -138,6 +138,90 @@ class MemberProfileUpdate extends Model
     ];
 
     /**
+     * The prefix a housing preference wears inside `changes`.
+     *
+     * `preference_<project>:<field>` - a COLON, because project keys contain
+     * underscores of their own (`other_district`) so an underscore cannot be
+     * parsed back apart, and a DOT would make the key unreachable through
+     * Laravel's dot notation: `data_get($changes, 'preference_dhaka_city.budget')`
+     * silently returns null, having looked for a nested array. Nothing reads
+     * it that way today, but the next person to try would get a null rather
+     * than an error. One key per field per project, flat, for
+     * the same reason the nominee's are: `changes` stays a map the staff
+     * screen and the applier already walk.
+     *
+     * WHY NOT ITS OWN QUEUE, which is what the legacy has
+     * (`member_choice_updates`). Because the legacy's pending table is FLAT
+     * COLUMNS and could not hold three projects in one row - it had no
+     * choice. This one holds JSON. And the thing being decided is one act: a
+     * member who corrects their address and their flat size in one sitting
+     * filed one request, and splitting it across two queues would let an
+     * officer approve half of it.
+     */
+    public const PREFERENCE_PREFIX = 'preference_';
+
+    /**
+     * What a member may ask to change about a project preference.
+     *
+     * The legacy form's third tab, per project: preferred areas, capacity
+     * range, flat size, expected bank loan, how many flats, and who told them
+     * about the project.
+     */
+    public const PREFERENCE_ALLOWED = [
+        'areas',
+        'flat_size_sft',
+        'budget',
+        'loan_percentage',
+        'flats_wanted',
+        'introduced_by_member_id',
+        'introduced_by_name',
+    ];
+
+    public static function preferenceKey(string $project, string $field): string
+    {
+        return self::PREFERENCE_PREFIX.$project.':'.$field;
+    }
+
+    /**
+     * The preference half of a change set, as project => field => value.
+     *
+     * @param  array<string, mixed>  $changes
+     * @return array<string, array<string, mixed>>
+     */
+    public static function preferenceChanges(array $changes): array
+    {
+        $out = [];
+
+        foreach ($changes as $key => $value) {
+            if (! str_starts_with($key, self::PREFERENCE_PREFIX)) {
+                continue;
+            }
+
+            $rest = substr($key, strlen(self::PREFERENCE_PREFIX));
+
+            if (! str_contains($rest, ':')) {
+                continue;
+            }
+
+            [$project, $field] = explode(':', $rest, 2);
+
+            // Both halves checked, so a key written when either list was wider
+            // is dropped rather than applied.
+            if (! array_key_exists($project, MemberPreference::PROJECTS)) {
+                continue;
+            }
+
+            if (! in_array($field, self::PREFERENCE_ALLOWED, true)) {
+                continue;
+            }
+
+            $out[$project][$field] = $value;
+        }
+
+        return $out;
+    }
+
+    /**
      * The nominee half of a change set, unprefixed.
      *
      * @param  array<string, mixed>  $changes

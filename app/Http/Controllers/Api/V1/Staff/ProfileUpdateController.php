@@ -8,9 +8,12 @@ use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Models\Tenant\AuditLog;
 use App\Models\Tenant\Member;
+use App\Models\Tenant\MemberPreference;
 use App\Models\Tenant\MemberProfileUpdate;
+use App\Models\Tenant\Nominee;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -131,6 +134,54 @@ class ProfileUpdateController extends Controller
                         $member->nominees()->create($nomineeChanges);
                     }
                 }
+
+                /*
+                 * THE HOUSING PREFERENCES, one row per project.
+                 *
+                 * updateOrCreate for the same reason as the nominee: from the
+                 * member's side "answer this project" and "change my answer"
+                 * are the same act. An answer emptied of everything is DELETED
+                 * rather than kept as a row of nulls - the staff endpoint does
+                 * the same, and a row that says nothing would still be counted
+                 * as an answered project by anything that counts them.
+                 */
+                $preferenceChanges = MemberProfileUpdate::preferenceChanges($record->changes);
+
+                foreach ($preferenceChanges as $project => $fields) {
+                    $existing = MemberPreference::query()
+                        ->where('member_id', $member->id)
+                        ->where('project', $project)
+                        ->first();
+
+                    $before += collect($fields)
+                        ->mapWithKeys(fn ($_, string $field) => [
+                            MemberProfileUpdate::preferenceKey($project, $field) => $existing?->{$field},
+                        ])
+                        ->all();
+
+                    /*
+                     * Merged with what is already there before asking whether
+                     * anything is left. A member clearing ONE field of an
+                     * answered project has not cleared the project, and
+                     * judging the incoming fields alone would delete the row.
+                     */
+                    $merged = new MemberPreference(array_merge(
+                        $existing?->only(MemberProfileUpdate::PREFERENCE_ALLOWED) ?? [],
+                        $fields,
+                        ['member_id' => $member->id, 'project' => $project],
+                    ));
+
+                    if (! $merged->isAnswered()) {
+                        $existing?->delete();
+
+                        continue;
+                    }
+
+                    MemberPreference::updateOrCreate(
+                        ['member_id' => $member->id, 'project' => $project],
+                        $fields,
+                    );
+                }
             }
 
             $record->update([
@@ -164,6 +215,32 @@ class ProfileUpdateController extends Controller
         return response()->json(['data' => $this->shape($record->fresh(['member']))]);
     }
 
+    /** What the record holds today, for whichever thing the key names. */
+    private function currentValue(
+        string $field,
+        ?Member $member,
+        ?Nominee $nominee,
+        Collection $preferences,
+    ): mixed {
+        if (str_starts_with($field, MemberProfileUpdate::PREFERENCE_PREFIX)) {
+            $rest = substr($field, strlen(MemberProfileUpdate::PREFERENCE_PREFIX));
+
+            if (! str_contains($rest, ':')) {
+                return null;
+            }
+
+            [$project, $name] = explode(':', $rest, 2);
+
+            return $preferences->get($project)?->{$name};
+        }
+
+        if (str_starts_with($field, MemberProfileUpdate::NOMINEE_PREFIX)) {
+            return $nominee?->{substr($field, strlen(MemberProfileUpdate::NOMINEE_PREFIX))};
+        }
+
+        return $member?->{$field};
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -177,10 +254,26 @@ class ProfileUpdateController extends Controller
          */
         $fields = [];
 
+        /*
+         * WHERE "CURRENT" COMES FROM DEPENDS ON THE KEY.
+         *
+         * This read `$member->{$field}` for everything, which is right for the
+         * member's own columns and silently wrong for the rest: a
+         * `nominee_name` key asked the MEMBER for a `nominee_name` attribute,
+         * got null, and showed an officer a blank where the nominee's current
+         * name should be. Approving a change you cannot see the shape of is
+         * exactly what these pairs exist to prevent.
+         */
+        $nominee = $member?->nominees()->orderBy('id')->first();
+
+        $preferences = $member
+            ? MemberPreference::query()->where('member_id', $member->id)->get()->keyBy('project')
+            : collect();
+
         foreach ($update->changes as $field => $proposed) {
             $fields[] = [
                 'field' => $field,
-                'current' => $member?->{$field},
+                'current' => $this->currentValue($field, $member, $nominee, $preferences),
                 'proposed' => $proposed,
             ];
         }

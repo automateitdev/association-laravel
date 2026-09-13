@@ -194,6 +194,8 @@ class DuesController extends Controller
     {
         $provider = $gateways->activeProvider();
 
+        $offlineOpen = (bool) Setting::get(Setting::MEMBER_OFFLINE_PAYMENT_ENABLED);
+
         $bank = [
             'account_name' => (string) Setting::get(Setting::BANK_ACCOUNT_NAME),
             'account_number' => (string) Setting::get(Setting::BANK_ACCOUNT_NUMBER),
@@ -205,11 +207,30 @@ class DuesController extends Controller
 
         return response()->json([
             'data' => [
+                /*
+                 * TWO SEPARATE QUESTIONS, and they used to be one.
+                 *
+                 * `bank.account_number` says the association CAN receive a
+                 * transfer. `payment.member_offline_enabled` says it is willing
+                 * to accept one a MEMBER files themselves - a record created by
+                 * the person who benefits from it, which somebody then has to
+                 * check against a photographed slip. An association whose
+                 * members pay at the counter has the first and wants nothing to
+                 * do with the second, and before this switch existed it had no
+                 * way to say so.
+                 *
+                 * `reason` because the two closures need different words on
+                 * screen: "the office has not published its account details"
+                 * sends a member to ask for them, and "this association does
+                 * not take offline payments" does not.
+                 */
                 'manual' => [
-                    // False when the association has not filled the details in.
-                    // The app must then say "contact the office" rather than
-                    // render an empty card that looks like a loading failure.
-                    'available' => $bank['account_number'] !== '',
+                    'available' => $offlineOpen && $bank['account_number'] !== '',
+                    'reason' => match (true) {
+                        ! $offlineOpen => 'disabled',
+                        $bank['account_number'] === '' => 'no_bank_details',
+                        default => null,
+                    },
                     'bank' => $bank,
                 ],
                 /*

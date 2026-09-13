@@ -8,8 +8,9 @@ use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Models\Tenant\Member;
 use App\Models\Tenant\PaymentInfo;
-use App\Services\PaymentDocumentService;
+use App\Models\Tenant\Setting;
 use App\Reports\InvoiceRenderer;
+use App\Services\PaymentDocumentService;
 use App\Services\PaymentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -76,6 +77,20 @@ class PaymentController extends Controller
     {
         $member = $this->member($request);
 
+        /*
+         * WHICH ROUTE THIS PAYMENT IS TAKING, decided before anything else.
+         *
+         * Online is the default and offline is the exception the association
+         * opts into - see Setting::MEMBER_OFFLINE_PAYMENT_ENABLED. The type
+         * used to default to `manual` unconditionally, which made the open
+         * route the one nobody had chosen.
+         *
+         * Resolved here rather than inline because three things downstream
+         * depend on it and must agree: whether a slip is required, what goes
+         * into the idempotency hash, and what is recorded on the row.
+         */
+        $type = $this->resolveType($request);
+
         $validated = $request->validate([
             'fee_assign_ids' => ['required', 'array', 'min:1'],
             'fee_assign_ids.*' => ['required', 'integer'],
@@ -112,10 +127,7 @@ class PaymentController extends Controller
                  * where a client sending `documents: []` is saying "none",
                  * which is correct and must not be an error.
                  */
-                Rule::requiredIf(
-                    fn () => ($request->input('payment_type') ?? PaymentInfo::TYPE_MANUAL)
-                        === PaymentInfo::TYPE_MANUAL
-                ),
+                Rule::requiredIf(fn () => $type === PaymentInfo::TYPE_MANUAL),
                 'array',
                 'max:'.PaymentDocumentService::MAX_PER_PAYMENT,
             ],
@@ -135,7 +147,7 @@ class PaymentController extends Controller
         $requestHash = hash('sha256', json_encode([
             'member' => $member->id,
             'assigns' => collect($validated['fee_assign_ids'])->sort()->values()->all(),
-            'type' => $validated['payment_type'] ?? PaymentInfo::TYPE_MANUAL,
+            'type' => $type,
         ]));
 
         $existing = DB::table('idempotency_keys')->where('key', $key)->first();
@@ -157,7 +169,7 @@ class PaymentController extends Controller
             $payment = $this->payments->create(
                 $member->id,
                 $validated['fee_assign_ids'],
-                $validated['payment_type'] ?? PaymentInfo::TYPE_MANUAL,
+                $type,
                 $validated['ledger_id'] ?? null,
             );
         } catch (\DomainException $e) {
@@ -190,6 +202,52 @@ class PaymentController extends Controller
     }
 
     // ---- internals -----------------------------------------------------
+
+    /**
+     * The route this payment takes, and whether it is open.
+     *
+     * ONLINE UNLESS THE ASSOCIATION SAYS OTHERWISE. A member filing an offline
+     * payment is asserting that money left their account, and somebody then has
+     * to read a photograph and decide whether to believe it. An association
+     * opts into that; it does not discover the door was open.
+     *
+     * THE APP ALREADY HIDES THE BUTTON, and that is not the same thing. The
+     * member pay screen reads `manual.available` from GET /fees/payment-instructions
+     * and offers what it is told to. Anything else reaching this endpoint - a
+     * stale build still installed on a phone, a script, the next release -
+     * would file an offline payment against an association that had switched
+     * them off, and nothing would have said so. That is the same lesson the
+     * required-slip rule learned: a rule enforced in one client is not a rule.
+     *
+     * AN OMITTED TYPE IS NOT A CHOICE, so it is not treated as one. It used to
+     * default to `manual`, which would now mean every client that does not send
+     * the field gets refused by an association with offline closed - a
+     * confusing answer to a request that expressed no preference. It resolves
+     * to whichever route is actually open, and to `online` when both are, which
+     * is the one the association is being asked to prefer.
+     */
+    private function resolveType(Request $request): string
+    {
+        $offlineOpen = (bool) Setting::get(Setting::MEMBER_OFFLINE_PAYMENT_ENABLED);
+        $asked = $request->input('payment_type');
+
+        if ($asked === PaymentInfo::TYPE_MANUAL && ! $offlineOpen) {
+            throw new ApiException(
+                'OFFLINE_PAYMENT_DISABLED',
+                'This association does not accept offline payments filed by members. '
+                    .'Pay online, or ask the office to record your payment.',
+                422,
+            );
+        }
+
+        if ($asked !== null) {
+            return $asked === PaymentInfo::TYPE_MANUAL
+                ? PaymentInfo::TYPE_MANUAL
+                : PaymentInfo::TYPE_ONLINE;
+        }
+
+        return $offlineOpen ? PaymentInfo::TYPE_MANUAL : PaymentInfo::TYPE_ONLINE;
+    }
 
     /**
      * Domain refusals become API codes the app can branch on, rather than a

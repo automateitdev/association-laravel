@@ -90,6 +90,30 @@ class Setting extends Model
     /** Whether members may start an online payment at all. */
     public const ONLINE_PAYMENT_ENABLED = 'payment.online_enabled';
 
+    /**
+     * Whether a MEMBER may file an offline payment themselves.
+     *
+     * ONLINE IS THE DEFAULT ROUTE AND OFFLINE IS THE EXCEPTION, which is the
+     * opposite of how this started. A member filing a manual payment is
+     * asserting that money left their account; the association then has to
+     * read a photographed slip and decide whether to believe it. That is a
+     * real cost and a real risk - it is the one path where the record is
+     * created by the person who benefits from it - and an association should
+     * be opting INTO it rather than discovering it is open.
+     *
+     * NOT THE SAME QUESTION AS `bank.account_number` BEING FILLED IN. That
+     * says the association CAN receive a transfer; this says it is willing to
+     * accept one a member files themselves. An association whose members all
+     * pay at the counter has the first and wants nothing to do with the
+     * second.
+     *
+     * STAFF COLLECTION IS UNAFFECTED. This switch is about who may create the
+     * record, not about whether cash is accepted: a cashier recording a
+     * counter payment goes through the staff collection endpoint and is
+     * governed by `payments.collect`, not by this.
+     */
+    public const MEMBER_OFFLINE_PAYMENT_ENABLED = 'payment.member_offline_enabled';
+
     /** How long an online payment intent may sit unconfirmed (FR-PAY-8). */
     public const PAYMENT_INTENT_TTL_MINUTES = 'payment.intent_ttl_minutes';
 
@@ -143,6 +167,15 @@ class Setting extends Model
 
             // Off until an association configures a gateway and turns it on.
             self::ONLINE_PAYMENT_ENABLED => ['value' => false, 'group' => 'payment'],
+
+            /*
+             * Off for a NEW association. An existing one keeps what it had -
+             * see the migration that adds this key, which writes `true` into
+             * any database that predates it. A switch whose default silently
+             * stops an operating association taking money is not a default,
+             * it is an outage with a changelog entry.
+             */
+            self::MEMBER_OFFLINE_PAYMENT_ENABLED => ['value' => false, 'group' => 'payment'],
         ];
     }
 

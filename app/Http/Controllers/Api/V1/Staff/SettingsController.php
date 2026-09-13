@@ -38,6 +38,16 @@ class SettingsController extends Controller
                 'payment' => [
                     'intent_ttl_minutes' => Setting::get(Setting::PAYMENT_INTENT_TTL_MINUTES),
                     'online_enabled' => (bool) Setting::get(Setting::ONLINE_PAYMENT_ENABLED),
+
+                    /*
+                     * Whether a member may file an offline payment themselves.
+                     * Not about whether the association banks cash - staff
+                     * collection at the counter is a different endpoint and a
+                     * different permission.
+                     */
+                    'member_offline_enabled' => (bool) Setting::get(
+                        Setting::MEMBER_OFFLINE_PAYMENT_ENABLED
+                    ),
                 ],
                 'bank' => $this->bankDetails(),
 
@@ -79,6 +89,7 @@ class SettingsController extends Controller
             'invoice.format' => ['sometimes', 'string', 'max:100'],
             'payment.intent_ttl_minutes' => ['sometimes', 'integer', 'min:5', 'max:1440'],
             'payment.online_enabled' => ['sometimes', 'boolean'],
+            'payment.member_offline_enabled' => ['sometimes', 'boolean'],
 
             'bank.account_name' => ['sometimes', 'nullable', 'string', 'max:255'],
             'bank.account_number' => ['sometimes', 'nullable', 'string', 'max:50'],

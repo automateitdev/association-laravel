@@ -95,6 +95,17 @@ class SettingsTest extends TenantTestCase
 
         $this->withHeaders($this->headers($staff))
             ->putJson('/api/v1/staff/settings', [
+                /*
+                 * THE SWITCH AS WELL AS THE ACCOUNT, and it did not used to
+                 * need saying. Offline payment was simply always open, so
+                 * filling in the bank details was the whole of what made the
+                 * manual card available; this test recorded that. Members now
+                 * pay online unless the association opts into member-filed
+                 * offline payments, so "where to pay" is two answers - the
+                 * association is willing, and here is the account. See
+                 * MemberOfflinePaymentTest.
+                 */
+                'payment' => ['member_offline_enabled' => true],
                 'bank' => [
                     'account_name' => 'COCSOL Cooperative Society',
                     'account_number' => '4446102001029',
@@ -117,12 +128,21 @@ class SettingsTest extends TenantTestCase
      */
     public function test_unset_bank_details_report_as_unavailable(): void
     {
-        $this->inTenant(fn () => app(TenantSeedService::class)->seedAll());
+        $this->inTenant(function () {
+            app(TenantSeedService::class)->seedAll();
+
+            // The switch ON, so `available: false` can only be about the
+            // missing account. Without this the assertion below passes for the
+            // wrong reason and would keep passing if the bank check were
+            // deleted outright.
+            Setting::put(Setting::MEMBER_OFFLINE_PAYMENT_ENABLED, true);
+        });
 
         $this->withHeaders($this->headers($this->memberToken()))
             ->getJson('/api/v1/fees/payment-instructions')
             ->assertOk()
-            ->assertJsonPath('data.manual.available', false);
+            ->assertJsonPath('data.manual.available', false)
+            ->assertJsonPath('data.manual.reason', 'no_bank_details');
     }
 
     // ---- what the app is told about online payment -----------------------

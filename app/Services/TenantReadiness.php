@@ -6,6 +6,7 @@ namespace App\Services;
 
 use App\Models\Tenant;
 use App\Models\Tenant\Setting;
+use App\Models\User;
 use App\Services\Gateways\SonaliPaymentGateway;
 use Illuminate\Support\Facades\DB;
 use Throwable;
@@ -64,6 +65,10 @@ class TenantReadiness
                  * one line does not use the query builder like its neighbours.
                  */
                 'online_enabled' => (bool) Setting::get(Setting::ONLINE_PAYMENT_ENABLED),
+                'member_offline_enabled' => (bool) Setting::get(
+                    Setting::MEMBER_OFFLINE_PAYMENT_ENABLED
+                ),
+                'bank_account' => (string) Setting::get(Setting::BANK_ACCOUNT_NUMBER),
             ]);
         } catch (Throwable $e) {
             /*
@@ -76,6 +81,14 @@ class TenantReadiness
 
             return $this->unreachable($e->getMessage());
         }
+
+        /*
+         * What a member can actually DO, as opposed to which switches are on.
+         * Online needs the gateway behind it; offline needs somewhere to send
+         * the money. A switch on its own is not a route.
+         */
+        $onlineOpen = $facts['gateway'] !== null && $facts['online_enabled'];
+        $offlineOpen = $facts['member_offline_enabled'] && $facts['bank_account'] !== '';
 
         $checks = [
             [
@@ -125,6 +138,34 @@ class TenantReadiness
                         : 'The association has turned it off in their own settings.'),
                 // Theirs to change, not ours. Said so rather than offering a button.
                 'fix' => 'The association controls this switch. Ask them, do not change it.',
+            ],
+            /*
+             * BOTH ROUTES CLOSED IS A REAL STATE, and it is silent.
+             *
+             * Online needs a gateway AND the switch; offline needs the switch
+             * AND a published bank account. Every one of those is a separate
+             * decision made on a separate screen, so an association can end up
+             * with no way for a member to pay without anyone having decided
+             * that - and the only symptom is members not paying, which looks
+             * like members not paying.
+             *
+             * Not blocking: an association that collects entirely at the
+             * counter is in this state deliberately and is working fine. It is
+             * listed so that it is a choice somebody can see.
+             */
+            [
+                'key' => 'member_payment_route',
+                'label' => 'Members can pay',
+                'ok' => $onlineOpen || $offlineOpen,
+                'blocking' => false,
+                'detail' => match (true) {
+                    $onlineOpen && $offlineOpen => 'Online, or by transfer with a slip.',
+                    $onlineOpen => 'Online only.',
+                    $offlineOpen => 'By transfer with a slip. Online is off.',
+                    default => 'Neither route is open — members can only pay at the counter.',
+                },
+                'fix' => 'Association settings: turn on online payment, or offline payment '
+                    .'with the bank account filled in. Staff collection works either way.',
             ],
             [
                 'key' => 'ledgers',
@@ -193,7 +234,7 @@ class TenantReadiness
         return DB::table('model_has_roles')
             ->join('roles', 'roles.id', '=', 'model_has_roles.role_id')
             ->where('roles.name', 'superadmin')
-            ->where('model_has_roles.model_type', \App\Models\User::class)
+            ->where('model_has_roles.model_type', User::class)
             ->distinct()
             ->count('model_has_roles.model_id');
     }

@@ -11,6 +11,8 @@ use App\Models\Tenant\FeeSetup;
 use App\Models\Tenant\FineDate;
 use App\Models\Tenant\Ledger;
 use App\Models\Tenant\Member;
+use App\Models\Tenant\MemberProfileUpdate;
+use App\Models\Tenant\Nominee;
 use App\Models\Tenant\PaymentInfo;
 use App\Models\Tenant\Setting;
 use App\Models\User;
@@ -116,6 +118,7 @@ class SeedDemoData extends Command
             $this->memberInactive();
             $this->staffAccount();
             $this->reportPopulation($setup);
+            $this->nominees();
         });
 
         $this->newLine();
@@ -128,6 +131,13 @@ class SeedDemoData extends Command
         $this->line('  01744444444  Nasreen Akter   suspended (arrears)');
         $this->line('  01755555555  Jamal Hossain   inactive (awaiting approval)');
         $this->line('  admin@demo.test             staff, superadmin');
+        $this->newLine();
+        $this->line('  Nominees');
+        $this->line('    Rahim Uddin     one, filled in - every field the form asks for');
+        $this->line('    Karim Ahmed     one, name only - the half-answered case');
+        $this->line('    Fatema Begum    two - the member form maintains the FIRST');
+        $this->line('    Nasreen Akter   none, and a pending request naming one');
+        $this->line('    Jamal Hossain   none - the "Add a nominee" empty state');
         $this->newLine();
         $this->line('  plus '.self::REPORT_MEMBERS.' further members carrying dues, so the reports');
         $this->line('  have enough rows to page, sort and export meaningfully.');
@@ -337,10 +347,10 @@ class SeedDemoData extends Command
     private function reportPopulation(FeeSetup $setup): void
     {
         $given = ['Rahim', 'Karim', 'Fatema', 'Nasreen', 'Jamal', 'Aleya', 'Babul', 'Shirin',
-                  'Rafiq', 'Sultana', 'Mizanur', 'Hasina', 'Kamal', 'Rokeya', 'Anwar', 'Momena',
-                  'Selim', 'Parvin', 'Jahangir', 'Nazma'];
+            'Rafiq', 'Sultana', 'Mizanur', 'Hasina', 'Kamal', 'Rokeya', 'Anwar', 'Momena',
+            'Selim', 'Parvin', 'Jahangir', 'Nazma'];
         $family = ['Uddin', 'Ahmed', 'Begum', 'Akter', 'Hossain', 'Khatun', 'Mia', 'Rahman',
-                   'Islam', 'Chowdhury'];
+            'Islam', 'Chowdhury'];
 
         $created = 0;
 
@@ -427,6 +437,150 @@ class SeedDemoData extends Command
         );
 
         return $member;
+    }
+
+    /**
+     * Nominees, in the states that are awkward to reach by hand.
+     *
+     * ONE PER SITUATION, like the members above. A nominee on every member
+     * would demonstrate nothing: what the screens actually need proving
+     * against is the member with none, the one whose nominee is half
+     * recorded, and the one staff gave a second nominee to - because the
+     * member's own form maintains only the FIRST, and that rule is invisible
+     * until there are two.
+     *
+     * NOT ON THE 40 REPORT MEMBERS. They exist to fill a table; giving them
+     * nominees would double the rows written for nothing anybody looks at.
+     */
+    private function nominees(): void
+    {
+        // Everything the legacy form asks for, so the member screen renders
+        // with no blanks and the staff screen has something to print.
+        $this->nominees_for('01711111111', [[
+            'name' => 'Shahana Uddin',
+            'relation' => 'Wife',
+            'father_name' => 'Abdul Karim',
+            'mother_name' => 'Rahima Khatun',
+            'gender' => 'female',
+            'birth_date' => '1988-03-14',
+            'nid' => '1990123456789',
+            'mobile' => '01811111111',
+            'country_code' => 'BD',
+            'address' => 'House 12, Road 4, Ibrahimpur, Dhaka 1206',
+            'profession' => 'Schoolteacher, Ibrahimpur Girls High School',
+        ]]);
+
+        /*
+         * A NAME AND NOTHING ELSE, which is what the office often has. The
+         * member screen has to read sensibly with ten empty fields under a
+         * filled one, and the staff print has to refuse rather than produce a
+         * card with blanks where an NID belongs.
+         */
+        $this->nominees_for('01722222222', [
+            ['name' => 'Ruhul Amin', 'relation' => 'Brother'],
+        ]);
+
+        /*
+         * TWO, recorded by staff. The member's own form maintains the first
+         * and leaves the second alone - a rule that cannot be checked with
+         * one.
+         */
+        $this->nominees_for('01733333333', [
+            [
+                'name' => 'Anwara Begum',
+                'relation' => 'Mother',
+                'nid' => '1975987654321',
+                'mobile' => '01833333333',
+                'country_code' => 'BD',
+            ],
+            [
+                'name' => 'Sabbir Hossain',
+                'relation' => 'Son',
+                'birth_date' => '2005-11-02',
+                'gender' => 'male',
+            ],
+        ]);
+
+        /*
+         * NONE, and a request asking for one - the state the new
+         * attach-before-approval path exists for, and the one that takes four
+         * steps to reach by hand. Nasreen can open the app and send her
+         * nominee's NID against a nominee who does not exist yet.
+         */
+        $this->pendingNomineeRequest('01744444444', [
+            'name' => 'Firoza Khatun',
+            'relation' => 'Sister',
+            'nid' => '1992456789012',
+        ]);
+
+        // None for either of these, which is a state to be ENFORCED rather
+        // than left to chance - Nasreen's request is only interesting while
+        // she has nobody, and Jamal is the "Add a nominee" empty state.
+        $this->nominees_for('01744444444', []);
+        $this->nominees_for('01755555555', []);
+
+        $this->line('  nominees ............. 4 recorded, 1 requested and waiting');
+    }
+
+    /**
+     * The nominees a demo member has - exactly these, and no others.
+     *
+     * THE SET IS REPLACED, NOT ADDED TO, and that is the difference between a
+     * seeder and a pile. Keying updateOrCreate on the name keeps a re-run from
+     * duplicating rows this command wrote, and does nothing about rows it did
+     * not: a member tried out by hand during development, or seeded by an
+     * older version of this file, keeps them. The first run here found Rahim
+     * Uddin with three nominees while the summary printed "one, filled in" -
+     * a seeder whose own output is wrong about the database is worse than no
+     * seeder.
+     *
+     * Only the five NAMED demo members are touched. The forty report members
+     * and anything an association recorded itself are none of this command's
+     * business.
+     *
+     * @param  list<array<string, mixed>>  $wanted
+     */
+    private function nominees_for(string $mobile, array $wanted): void
+    {
+        $member = Member::where('mobile', $mobile)->firstOrFail();
+        $names = array_column($wanted, 'name');
+
+        Nominee::where('member_id', $member->id)
+            ->when($names !== [], fn ($q) => $q->whereNotIn('name', $names))
+            ->delete();
+
+        foreach ($wanted as $attributes) {
+            Nominee::updateOrCreate(
+                ['member_id' => $member->id, 'name' => $attributes['name']],
+                $attributes,
+            );
+        }
+    }
+
+    /**
+     * A nominee asked for and not yet decided.
+     *
+     * Written as the API would write it - `nominee_*` keys in a pending
+     * `member_profile_updates` row - rather than by creating the Nominee and
+     * pretending. A seeded state that does not match what the endpoint
+     * produces is a state the screens have never actually been in.
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    private function pendingNomineeRequest(string $mobile, array $attributes): void
+    {
+        $member = Member::where('mobile', $mobile)->firstOrFail();
+
+        $changes = [];
+
+        foreach ($attributes as $field => $value) {
+            $changes[MemberProfileUpdate::NOMINEE_PREFIX.$field] = $value;
+        }
+
+        MemberProfileUpdate::updateOrCreate(
+            ['member_id' => $member->id, 'status' => MemberProfileUpdate::STATUS_PENDING],
+            ['changes' => $changes],
+        );
     }
 
     /**

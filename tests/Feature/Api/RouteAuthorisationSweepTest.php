@@ -6,6 +6,7 @@ namespace Tests\Feature\Api;
 
 use App\Http\Middleware\ResolveTenant;
 use Illuminate\Routing\Route;
+use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\Route as RouteFacade;
 use Tests\TestCase;
 
@@ -109,6 +110,26 @@ class RouteAuthorisationSweepTest extends TestCase
          */
         'GET api/v1/me/profile-updates',
         'POST api/v1/me/profile-updates',
+
+        /*
+         * The lists the housing-preference section of that form renders from:
+         * the three project names, four budget bands, four loan percentages,
+         * the 64 districts by division, and the areas of Dhaka members have
+         * chosen before.
+         *
+         * A READ OF A CATALOGUE, NOT OF ANYBODY. It takes no member, returns
+         * no member, and says nothing that differs between two callers - the
+         * same bytes for every member of the association, and for the staff
+         * screen that reads the same lists from
+         * /staff/member-preferences/options. There is nothing here an ability
+         * could protect.
+         *
+         * It is not ungated by omission. An ability would have to be one a
+         * member holds, and gating it that way means a member who may file the
+         * form cannot render it - the fields would be empty pickers on a form
+         * the API then refuses, which is worse than either.
+         */
+        'GET api/v1/me/preference-options',
 
         /*
          * A member's own identity documents (parity P-10). Both are READS, and
@@ -235,7 +256,7 @@ class RouteAuthorisationSweepTest extends TestCase
      */
     private function resolvedMiddleware(Route $route): array
     {
-        $groups = app(\Illuminate\Routing\Router::class)->getMiddlewareGroups();
+        $groups = app(Router::class)->getMiddlewareGroups();
         $resolved = [];
 
         foreach ($route->gatherMiddleware() as $entry) {

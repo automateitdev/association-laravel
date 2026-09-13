@@ -65,13 +65,36 @@ class MemberPreference extends Model
      * @var list<string>
      */
     public const DHAKA_AREAS = [
+        /*
+         * SPELLED AS THE DATA SPELLS THEM, not as the places are usually
+         * written. `Basundhora/Purbachal` is how every legacy row that names
+         * it is spelled, and `Bashundhara` would have been the better English
+         * - but offering a spelling the imported rows do not use splits one
+         * place into two values, which is the exact disease the rest of this
+         * table was normalised to cure.
+         *
+         * `Afteb Nagar` is here because a member chose it. It was missing from
+         * the first version of this list, which was written from memory rather
+         * than from the answers: of the fifteen Dhaka answers in the legacy
+         * data it is one of five distinct places, and a suggestion list that
+         * omits somewhere people have already asked for is worse than none.
+         */
         'Uttara',
-        'Mirpur',
         'Mohammadpur',
-        'Basundhara/Purbachal',
+        'Basundhora/Purbachal',
+        'Afteb Nagar',
+        'Mirpur',
         'Amin Bazar',
         'Savar',
         'Keraniganj',
+
+        /*
+         * LAST, AND NOT A PLACE. The legacy field is a taggable multi-select -
+         * a member could type somewhere nobody had listed - and four of the
+         * fifteen answers are exactly that, recorded as `Other`. Keeping it
+         * means somebody whose area is not here can still answer; dropping it
+         * would make the list a lie about what the association will consider.
+         */
         'Other',
     ];
 

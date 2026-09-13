@@ -153,7 +153,16 @@ class MemberOfflinePaymentTest extends TenantTestCase
                 'payment_type' => 'manual',
             ])
             ->assertStatus(422)
-            ->assertJsonValidationErrors('documents');
+            /*
+             * `error.details`, not Laravel's `errors` - so NOT
+             * assertJsonValidationErrors, which looks for the framework's own
+             * envelope and reports "response does not have JSON validation
+             * errors" against a response that plainly does. This API wraps
+             * every failure in `error`; see PaymentSlipRequiredTest, which
+             * asserts the same path for the same rule.
+             */
+            ->assertJsonPath('error.code', 'VALIDATION_FAILED')
+            ->assertJsonPath('error.details.documents.0', 'The documents field is required.');
     }
 
     // ---- the omitted choice -----------------------------------------------

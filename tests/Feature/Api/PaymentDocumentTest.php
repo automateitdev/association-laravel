@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Tests\Feature\Api;
 
 use App\Models\Tenant\FeeAssign;
+use App\Models\Tenant\Ledger;
 use App\Models\Tenant\PaymentInfo;
+use App\Models\Tenant\Setting;
 use App\Models\User;
 use App\Services\FeeAssignService;
 use App\Services\FineService;
@@ -48,6 +50,15 @@ class PaymentDocumentTest extends TenantTestCase
     {
         return $this->inTenant(function () {
             app(TenantSeedService::class)->seedAll();
+
+            /*
+             * THE ROUTE OPEN, so this class is about the DOCUMENT and not
+             * about the door. Member-filed offline payment is off for a new
+             * association (FR-PAY-16); without this, every manual request
+             * below is refused with OFFLINE_PAYMENT_DISABLED before a
+             * document is ever looked at.
+             */
+            Setting::put(Setting::MEMBER_OFFLINE_PAYMENT_ENABLED, true);
 
             $ledgers = $this->makeLedgers();
             $setup = $this->makeFeeSetup([
@@ -161,7 +172,7 @@ class PaymentDocumentTest extends TenantTestCase
             ->json('data.id');
 
         $this->inTenant(function () use ($paymentId) {
-            $ledgerId = \App\Models\Tenant\Ledger::where('name', 'Cash')->value('id');
+            $ledgerId = Ledger::where('name', 'Cash')->value('id');
             app(PaymentService::class)->complete(PaymentInfo::find($paymentId), ledgerId: $ledgerId);
         });
 
@@ -339,7 +350,7 @@ class PaymentDocumentTest extends TenantTestCase
             ->json('data.id');
 
         $staffToken = $this->staffToken();
-        $ledgerId = $this->inTenant(fn () => \App\Models\Tenant\Ledger::where('name', 'Cash')->value('id'));
+        $ledgerId = $this->inTenant(fn () => Ledger::where('name', 'Cash')->value('id'));
 
         $this->withHeaders($this->headers($staffToken))
             ->postJson('/api/v1/staff/payments/decide', [

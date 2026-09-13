@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Tests\Feature\Api;
 
 use App\Models\Tenant\FeeAssign;
+use App\Models\Tenant\Ledger;
 use App\Models\Tenant\Member;
 use App\Models\Tenant\PaymentInfo;
+use App\Models\Tenant\Setting;
 use App\Models\User;
 use App\Services\FeeAssignService;
 use App\Services\TenantSeedService;
@@ -58,6 +60,16 @@ class PaymentSlipRequiredTest extends TenantTestCase
         return $this->inTenant(function () {
             app(TenantSeedService::class)->seedAll();
             $this->seedSettings();
+
+            /*
+             * THE ROUTE OPEN, so these tests are about the SLIP and not about
+             * the door. Member-filed offline payment is off for a new
+             * association (FR-PAY-16), and without this every manual request
+             * below is refused with OFFLINE_PAYMENT_DISABLED before the
+             * documents rule is ever consulted - the whole class would pass on
+             * its status codes while testing nothing it claims to.
+             */
+            Setting::put(Setting::MEMBER_OFFLINE_PAYMENT_ENABLED, true);
 
             static $sequence = 0;
             $sequence++;
@@ -157,10 +169,17 @@ class PaymentSlipRequiredTest extends TenantTestCase
     }
 
     /**
-     * ...and the default is manual, so omitting the type does not sidestep it.
+     * ...and omitting the type does not sidestep it WHERE THE DEFAULT IS MANUAL.
      *
-     * `payment_type` is `sometimes` on this endpoint and falls back to manual,
-     * which would be an easy way to be accidentally exempt.
+     * `payment_type` is `sometimes` on this endpoint, so falling through it
+     * would be an easy way to be accidentally exempt. The fallback used to be
+     * `manual` unconditionally; since FR-PAY-16 it resolves to whichever route
+     * is open, and this association has offline open - set in memberWithDue -
+     * so manual is still what an omitted type means here, and the rule still
+     * applies to it.
+     *
+     * The other half of that resolution, an omitted type becoming `online`
+     * where offline is shut, is in MemberOfflinePaymentTest.
      */
     public function test_omitting_the_type_does_not_escape_the_rule(): void
     {
@@ -168,7 +187,11 @@ class PaymentSlipRequiredTest extends TenantTestCase
 
         $this->withHeaders($this->headers($token) + ['Idempotency-Key' => 'no-type-1'])
             ->postJson('/api/v1/payments', ['fee_assign_ids' => [$assign]])
-            ->assertStatus(422);
+            ->assertStatus(422)
+            // The SLIP rule, not the route. Asserted by code rather than by
+            // status, because OFFLINE_PAYMENT_DISABLED is also a 422 and would
+            // have let this pass while proving the opposite.
+            ->assertJsonPath('error.details.documents.0', 'The documents field is required.');
     }
 
     /**
@@ -235,7 +258,7 @@ class PaymentSlipRequiredTest extends TenantTestCase
         $token = $this->staffToken();
         ['member' => $member, 'assign' => $assign] = $this->memberWithDue();
 
-        $ledger = $this->inTenant(fn () => \App\Models\Tenant\Ledger::firstOrFail()->id);
+        $ledger = $this->inTenant(fn () => Ledger::firstOrFail()->id);
 
         $this->withHeaders($this->headers($token) + ['Idempotency-Key' => 'counter-1'])
             ->postJson('/api/v1/staff/collections', [
@@ -260,7 +283,7 @@ class PaymentSlipRequiredTest extends TenantTestCase
         $token = $this->staffToken();
         ['member' => $member, 'assign' => $assign] = $this->memberWithDue();
 
-        $ledger = $this->inTenant(fn () => \App\Models\Tenant\Ledger::firstOrFail()->id);
+        $ledger = $this->inTenant(fn () => Ledger::firstOrFail()->id);
 
         $response = $this->withHeaders($this->headers($token) + ['Idempotency-Key' => 'counter-2'])
             ->post('/api/v1/staff/collections', [

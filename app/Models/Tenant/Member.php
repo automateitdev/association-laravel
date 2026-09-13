@@ -24,7 +24,9 @@ class Member extends Authenticatable
     use SoftDeletes;
 
     public const STATUS_INACTIVE = 'inactive';
+
     public const STATUS_ACTIVE = 'active';
+
     public const STATUS_SUSPENDED = 'suspended';
 
     protected $fillable = [
@@ -33,7 +35,7 @@ class Member extends Authenticatable
         'mobile', 'country_code', 'email', 'password',
         'nid', 'present_address', 'permanent_address', 'office_address',
         'emergency_contact',
-        'introduced_by_member_id', 'introduced_by_name',
+        'introduced_by_member_id', 'introduced_by_name', 'introduced_by_mobile',
         'image', 'nid_front', 'nid_back', 'signature',
         'proof_joining_cadre', 'proof_signed_by_sup_author',
         'status', 'created_by', 'updated_by',

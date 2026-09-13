@@ -94,7 +94,58 @@ class ProfileController extends Controller
             'permanent_address' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'office_address' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'emergency_contact' => ['sometimes', 'nullable', 'string', 'max:20'],
+
+            /*
+             * THE CADRE SERVICE RECORD - the legacy form's first tab asks for
+             * all three, and none of them could be corrected here until now.
+             *
+             * `joining_date` is the date they joined the SERVICE, not the
+             * association: the legacy form labels it under "BCS Batch & Cadre"
+             * and the association's own join date is a different thing it
+             * records itself.
+             */
+            'bcs_batch' => ['sometimes', 'nullable', 'string', 'max:50'],
+            /*
+              * An INTEGER, as it is in both schemas - legacy `cader_id` is
+              * `int` and its form marks the field numeric. Validated as one
+              * here so a typed-in letter is refused with something a member
+              * can act on, rather than reaching MySQL and coming back as
+              * "Incorrect integer value" in a 500.
+              */
+            'cadre_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
+            'joining_date' => ['sometimes', 'nullable', 'date', 'before_or_equal:today'],
+
+            /*
+             * THE REFERENCE - who vouched for this applicant.
+             *
+             * `exists` on the member link, so a request naming a member number
+             * that is not there is refused now rather than at approval, where
+             * an officer can only turn it down. NOT `unique`-style validation
+             * on the name: an introducer who is not a member is exactly what
+             * `introduced_by_name` is for.
+             */
+            'introduced_by_member_id' => [
+                'sometimes', 'nullable', 'integer', 'exists:members,id',
+            ],
+            'introduced_by_name' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'introduced_by_mobile' => ['sometimes', 'nullable', 'string', 'max:20'],
         ]);
+
+        /*
+         * A member cannot introduce themselves.
+         *
+         * Not a hypothetical: the field is a member number typed by hand, and
+         * one's own is the number most readily to hand. It would also make
+         * `introducedBy` a self-referencing row that reads as a cycle to
+         * anything walking the relation.
+         */
+        if (($validated['introduced_by_member_id'] ?? null) === $member->id) {
+            throw new ApiException(
+                'SELF_INTRODUCTION',
+                'You cannot be your own introducer.',
+                422,
+            );
+        }
 
         /*
          * Only what actually differs. A form that posts every field would

@@ -38,19 +38,57 @@ class MemberProfileUpdate extends Model
      * not the member's description of themselves.
      */
     public const ALLOWED = [
+        // Who they are
         'name',
         'father_name',
         'mother_name',
         'spouse_name',
         'birth_date',
         'gender',
-        'mobile',
-        'email',
         'nid',
+
+        /*
+         * How to reach them.
+         *
+         * `country_code` WAS MISSING, and its absence was a silent one.
+         * ProfileController validates it, the member's request carries it, an
+         * officer sees it on screen and approves - and then this list drops it
+         * on the way to `$member->update()`, because approval filters against
+         * ALLOWED. A member who moved abroad got their new number applied
+         * against the old country. The two travel together by design; they
+         * have to be permitted together too.
+         */
+        'mobile',
+        'country_code',
+        'email',
+        'emergency_contact',
         'present_address',
         'permanent_address',
         'office_address',
-        'emergency_contact',
+
+        /*
+         * The cadre service record, which is what makes an applicant eligible
+         * for this kind of association at all - the legacy form asks for the
+         * batch, the joining date and the cadre ID on its first tab, and this
+         * list did not carry any of them. A member whose cadre ID was typed
+         * wrong at registration had no way to say so.
+         */
+        'bcs_batch',
+        'cadre_id',
+        'joining_date',
+
+        /*
+         * The reference: who vouched for this applicant. Legacy `ref_name`,
+         * `ref_mobile` and `ref_memeber_id_no`.
+         *
+         * `introduced_by_member_id` is the link when the introducer is
+         * themselves a member; `introduced_by_name` is the record when they
+         * are not. Both, because the legacy data has 63 members with a
+         * reference and no guarantee it resolves to a row here.
+         */
+        'introduced_by_member_id',
+        'introduced_by_name',
+        'introduced_by_mobile',
     ];
 
     protected $fillable = [

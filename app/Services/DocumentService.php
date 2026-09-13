@@ -6,12 +6,15 @@ namespace App\Services;
 
 use App\Models\Tenant\Document;
 use App\Models\Tenant\Member;
+use App\Models\Tenant\MemberProfileUpdate;
 use App\Models\Tenant\Nominee;
 use App\Models\Tenant\Signatory;
 use DomainException;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 /**
  * Member and nominee identity documents (parity P-10).
@@ -115,6 +118,24 @@ class DocumentService
             $owner instanceof Member => self::MEMBER_SLOTS,
             $owner instanceof Nominee => self::NOMINEE_SLOTS,
             $owner instanceof Signatory => self::SIGNATORY_SLOTS,
+
+            /*
+             * A PENDING REQUEST HOLDS ITS OWN ATTACHMENTS, and they are a
+             * nominee's - the only documents a request carries.
+             *
+             * This exists because a member naming their FIRST nominee has
+             * nobody to attach files to yet: the nominee row is created when
+             * the office approves. Without somewhere to put them, attaching
+             * the NID meant coming back after approval - two visits for what
+             * the legacy does in one submission, and the second visit is the
+             * one nobody makes.
+             *
+             * So the request owns them until it is decided, and approval
+             * re-points them at the nominee it creates. See
+             * ProfileUpdateController.
+             */
+            $owner instanceof MemberProfileUpdate => self::NOMINEE_SLOTS,
+
             default => throw new DomainException('That record does not carry documents.'),
         };
     }
@@ -278,7 +299,7 @@ class DocumentService
     /**
      * Everything waiting on a decision, across every member.
      *
-     * @return \Illuminate\Database\Eloquent\Collection<int, Document>
+     * @return Collection<int, Document>
      */
     public function queue()
     {
@@ -398,7 +419,30 @@ class DocumentService
         $this->storage->delete($disk, $path);
     }
 
-    /** @return \Illuminate\Database\Eloquent\Collection<int, Document> */
+    /**
+     * Throw one away, row and file.
+     *
+     * For a submission that has nowhere left to go - files hung off a profile
+     * update the office refused. Unlike `delete`, this takes the DOCUMENT
+     * rather than an owner and a slot, because the owner is the thing being
+     * discarded along with it.
+     */
+    public function discard(Document $document): void
+    {
+        $disk = $document->disk;
+        $path = $document->path;
+        $hadFile = $document->hasFile();
+
+        $document->delete();
+
+        // After the row, as everywhere else here: a file with no row is
+        // tidier than a row pointing at nothing.
+        if ($hadFile) {
+            $this->storage->delete($disk, $path);
+        }
+    }
+
+    /** @return Collection<int, Document> */
     public function all(Model $owner)
     {
         return Document::query()
@@ -455,7 +499,7 @@ class DocumentService
 
     private function safeName(string $name): string
     {
-        return \Illuminate\Support\Str::limit(
+        return Str::limit(
             preg_replace('/[^\w\s.\-()]/u', '', $name) ?: 'document',
             120,
             '',

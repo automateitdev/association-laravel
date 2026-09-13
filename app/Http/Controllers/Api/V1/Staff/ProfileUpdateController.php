@@ -7,10 +7,12 @@ namespace App\Http\Controllers\Api\V1\Staff;
 use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Models\Tenant\AuditLog;
+use App\Models\Tenant\Document;
 use App\Models\Tenant\Member;
 use App\Models\Tenant\MemberPreference;
 use App\Models\Tenant\MemberProfileUpdate;
 use App\Models\Tenant\Nominee;
+use App\Services\DocumentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -30,6 +32,8 @@ use Illuminate\Support\Facades\DB;
  */
 class ProfileUpdateController extends Controller
 {
+    public function __construct(private readonly DocumentService $documents) {}
+
     public function index(Request $request): JsonResponse
     {
         $updates = MemberProfileUpdate::query()
@@ -131,8 +135,29 @@ class ProfileUpdateController extends Controller
                     if ($nominee) {
                         $nominee->update($nomineeChanges);
                     } else {
-                        $member->nominees()->create($nomineeChanges);
+                        $nominee = $member->nominees()->create($nomineeChanges);
                     }
+
+                    /*
+                     * THE FILES FOLLOW THE PERSON THEY DESCRIBE.
+                     *
+                     * A member naming their FIRST nominee has nobody to
+                     * attach an NID to - the row is created here, on
+                     * approval - so the submission hangs off this request
+                     * instead, and moves across once there is somebody to own
+                     * it. See DocumentController::nomineeOwner.
+                     *
+                     * Re-pointed rather than copied: it is the same file, and
+                     * a second row would leave an officer two identical
+                     * photographs to decide between.
+                     */
+                    Document::query()
+                        ->where('documentable_type', MemberProfileUpdate::class)
+                        ->where('documentable_id', $record->id)
+                        ->update([
+                            'documentable_type' => Nominee::class,
+                            'documentable_id' => $nominee->id,
+                        ]);
                 }
 
                 /*
@@ -181,6 +206,24 @@ class ProfileUpdateController extends Controller
                         ['member_id' => $member->id, 'project' => $project],
                         $fields,
                     );
+                }
+            }
+
+            /*
+             * A REFUSED REQUEST TAKES ITS ATTACHMENTS WITH IT.
+             *
+             * Files hung off this row were sent for a nominee the office has
+             * just declined to record. Leaving them would orphan an identity
+             * document against a dead request - unreachable by the member,
+             * invisible to staff, and still on disk. The member re-sends with
+             * the correction, which is the same thing they do with the name.
+             */
+            if (! $approving) {
+                foreach (Document::query()
+                    ->where('documentable_type', MemberProfileUpdate::class)
+                    ->where('documentable_id', $record->id)
+                    ->get() as $attachment) {
+                    $this->documents->discard($attachment);
                 }
             }
 

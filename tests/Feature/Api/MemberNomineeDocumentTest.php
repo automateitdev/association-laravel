@@ -6,6 +6,7 @@ namespace Tests\Feature\Api;
 
 use App\Models\Tenant\Document;
 use App\Models\Tenant\Member;
+use App\Models\Tenant\MemberProfileUpdate;
 use App\Models\Tenant\Nominee;
 use App\Models\User;
 use App\Services\DocumentService;
@@ -141,6 +142,135 @@ class MemberNomineeDocumentTest extends TenantTestCase
 
     // ---- no nominee yet ---------------------------------------------------
 
+    // ---- before the nominee exists ---------------------------------------
+
+    /**
+     * THE FIRST NOMINEE CAN BE DOCUMENTED IN THE SAME VISIT.
+     *
+     * This is what the whole pending-owner arrangement is for. A member naming
+     * their first nominee has nobody to attach an NID to - the row is created
+     * on approval - so an earlier version refused and told them to come back
+     * afterwards. Two visits for what the legacy does in one submission, and
+     * the second visit is the one nobody makes.
+     */
+    public function test_a_member_can_attach_documents_while_the_nominee_is_still_pending(): void
+    {
+        $member = $this->member();
+        $token = $this->memberToken($member);
+
+        // The name, filed and not yet decided. No Nominee row exists.
+        $this->postJson('/api/v1/me/profile-updates', [
+            'nominee' => ['name' => 'Rahima Begum', 'relation' => 'Wife'],
+        ], $this->headers($token))->assertStatus(201);
+
+        $this->inTenant(fn () => self::assertSame(0, Nominee::query()->count()));
+
+        $this->post('/api/v1/me/nominee-documents', [
+            'slot' => 'nid_front',
+            'file' => $this->photo(),
+        ], $this->headers($token))->assertStatus(201);
+
+        // Held against the REQUEST, because there is no person yet.
+        $this->inTenant(function () {
+            $document = Document::query()->latest('id')->first();
+
+            self::assertSame(MemberProfileUpdate::class, $document->documentable_type);
+        });
+    }
+
+    /** And approval moves them onto the nominee it creates. */
+    public function test_approval_moves_the_attachments_onto_the_new_nominee(): void
+    {
+        $member = $this->member();
+        $token = $this->memberToken($member);
+
+        $this->postJson('/api/v1/me/profile-updates', [
+            'nominee' => ['name' => 'Rahima Begum'],
+        ], $this->headers($token))->assertStatus(201);
+
+        $this->post('/api/v1/me/nominee-documents', [
+            'slot' => 'nid_front',
+            'file' => $this->photo(),
+        ], $this->headers($token))->assertStatus(201);
+
+        $update = $this->inTenant(fn () => MemberProfileUpdate::query()->latest('id')->value('id'));
+
+        $this->postJson("/api/v1/staff/profile-updates/{$update}/decide", [
+            'decision' => 'approve',
+        ], $this->headers($this->staffToken()))->assertOk();
+
+        $this->inTenant(function () use ($member) {
+            $nominee = $member->nominees()->first();
+            $document = Document::query()->latest('id')->first();
+
+            self::assertNotNull($nominee);
+            self::assertSame(Nominee::class, $document->documentable_type);
+            self::assertSame($nominee->id, $document->documentable_id);
+
+            // The SAME row, re-pointed - not a copy. Two identical
+            // photographs is two things for an officer to decide between.
+            self::assertSame(1, Document::query()->count());
+        });
+    }
+
+    /**
+     * A REFUSED REQUEST TAKES ITS ATTACHMENTS WITH IT.
+     *
+     * They were sent for a nominee the office declined to record. Left behind
+     * they would be an identity document against a dead request -
+     * unreachable by the member, invisible to staff, and still on disk.
+     */
+    public function test_refusing_the_request_discards_what_was_attached_to_it(): void
+    {
+        $member = $this->member();
+        $token = $this->memberToken($member);
+
+        $this->postJson('/api/v1/me/profile-updates', [
+            'nominee' => ['name' => 'Rahima Begum'],
+        ], $this->headers($token))->assertStatus(201);
+
+        $this->post('/api/v1/me/nominee-documents', [
+            'slot' => 'image',
+            'file' => $this->photo(),
+        ], $this->headers($token))->assertStatus(201);
+
+        $update = $this->inTenant(fn () => MemberProfileUpdate::query()->latest('id')->value('id'));
+
+        $this->postJson("/api/v1/staff/profile-updates/{$update}/decide", [
+            'decision' => 'reject',
+            'reason' => 'The NID does not match that name.',
+        ], $this->headers($this->staffToken()))->assertOk();
+
+        $this->inTenant(function () {
+            self::assertSame(0, Nominee::query()->count());
+            self::assertSame(0, Document::query()->count(), 'The attachment was orphaned.');
+        });
+    }
+
+    /**
+     * ONLY A REQUEST THAT ACTUALLY NAMES A NOMINEE.
+     *
+     * A member with a pending address change has not asked for a nominee, and
+     * hanging an NID off that request would put a stranger's photograph in
+     * front of an officer deciding a street name.
+     */
+    public function test_a_pending_change_that_is_not_about_a_nominee_does_not_accept_documents(): void
+    {
+        $member = $this->member();
+        $token = $this->memberToken($member);
+
+        $this->postJson('/api/v1/me/profile-updates', [
+            'present_address' => 'Somewhere New',
+        ], $this->headers($token))->assertStatus(201);
+
+        $this->post('/api/v1/me/nominee-documents', [
+            'slot' => 'image',
+            'file' => $this->photo(),
+        ], $this->headers($token))
+            ->assertStatus(422)
+            ->assertJsonPath('error.code', 'NO_NOMINEE');
+    }
+
     /**
      * NOT A 404.
      *
@@ -148,7 +278,7 @@ class MemberNomineeDocumentTest extends TenantTestCase
      * not named anybody yet, and the answer they need is "name them first" -
      * a different screen, not a missing page.
      */
-    public function test_a_member_with_no_nominee_is_told_to_name_one(): void
+    public function test_a_member_with_no_nominee_and_no_request_is_told_what_to_do_first(): void
     {
         $member = $this->member();
 

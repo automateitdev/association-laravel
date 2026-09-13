@@ -8,6 +8,7 @@ use App\Exceptions\ApiException;
 use App\Http\Controllers\Controller;
 use App\Models\Tenant\Document;
 use App\Models\Tenant\Member;
+use App\Models\Tenant\MemberProfileUpdate;
 use App\Models\Tenant\Nominee;
 use App\Models\User;
 use App\Services\DocumentService;
@@ -111,12 +112,12 @@ class DocumentController extends Controller
      */
     public function myNomineeIndex(Request $request): JsonResponse
     {
-        return response()->json(['data' => $this->documents->list($this->selfNominee($request))]);
+        return response()->json(['data' => $this->documents->list($this->nomineeOwner($request))]);
     }
 
     public function myNomineeSubmit(Request $request): JsonResponse
     {
-        $nominee = $this->selfNominee($request);
+        $owner = $this->nomineeOwner($request);
 
         $validated = $request->validate([
             'slot' => ['required', 'string', 'max:40'],
@@ -124,22 +125,22 @@ class DocumentController extends Controller
         ]);
 
         try {
-            $this->documents->submit($nominee, $validated['slot'], $request->file('file'));
+            $this->documents->submit($owner, $validated['slot'], $request->file('file'));
         } catch (DomainException $e) {
             throw new ApiException('DOCUMENT_REJECTED', $e->getMessage(), 422);
         }
 
-        return response()->json(['data' => $this->documents->list($nominee)], 201);
+        return response()->json(['data' => $this->documents->list($owner)], 201);
     }
 
     public function myNomineeShow(Request $request, string $slot): StreamedResponse
     {
-        return $this->stream($this->selfNominee($request), $slot);
+        return $this->stream($this->nomineeOwner($request), $slot);
     }
 
     public function myNomineePendingShow(Request $request, string $slot): StreamedResponse
     {
-        return $this->stream($this->selfNominee($request), $slot, Document::STATUS_PENDING);
+        return $this->stream($this->nomineeOwner($request), $slot, Document::STATUS_PENDING);
     }
 
     // ------------------------------------------------------------------- staff
@@ -364,16 +365,58 @@ class DocumentController extends Controller
      * the nominee's document slots inside the section that names them, so the
      * two are already next to each other.
      */
-    private function selfNominee(Request $request): Nominee
+    /**
+     * What the caller's nominee documents hang off - and it is not always a
+     * Nominee.
+     *
+     * A MEMBER NAMING THEIR FIRST NOMINEE HAS NOBODY TO ATTACH FILES TO. The
+     * nominee row is created when the office approves, so an earlier version
+     * of this refused with "name your nominee first" and left the member to
+     * come back after approval: two visits for what the legacy does in one
+     * submission, and the second visit is the one nobody makes. The NID is
+     * most of the point of recording a nominee, so that was the wrong
+     * trade.
+     *
+     * The order of preference is the order of certainty:
+     *
+     *   the nominee, once one exists - the documents belong to a person
+     *   the pending request that names one - they belong to the ASKING,
+     *     and approval re-points them at the nominee it creates
+     *
+     * And when there is neither, a refusal that says which thing to do first
+     * rather than a 404 about a record the member never asked for by id.
+     */
+    private function nomineeOwner(Request $request): Model
     {
         $member = $this->self($request);
 
-        return $member->nominees()->orderBy('id')->first()
-            ?? throw new ApiException(
-                'NO_NOMINEE',
-                'Name your nominee first, then you can send their documents.',
-                422,
-            );
+        $nominee = $member->nominees()->orderBy('id')->first();
+
+        if ($nominee) {
+            return $nominee;
+        }
+
+        $pending = MemberProfileUpdate::query()
+            ->where('member_id', $member->id)
+            ->where('status', MemberProfileUpdate::STATUS_PENDING)
+            ->latest('id')
+            ->first();
+
+        /*
+         * ONLY A REQUEST THAT ACTUALLY NAMES A NOMINEE. A member with a
+         * pending address change has not asked for a nominee, and hanging an
+         * NID off that request would put a stranger's photograph in front of
+         * an officer deciding a street name.
+         */
+        if ($pending && MemberProfileUpdate::nomineeChanges($pending->changes) !== []) {
+            return $pending;
+        }
+
+        throw new ApiException(
+            'NO_NOMINEE',
+            "Fill in your nominee's name above and send it, then attach their documents here.",
+            422,
+        );
     }
 
     private function self(Request $request): Member

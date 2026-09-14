@@ -12,6 +12,7 @@ use App\Models\Tenant\MemberProfileUpdate;
 use App\Models\Tenant\Nominee;
 use App\Models\User;
 use App\Services\DocumentService;
+use App\Support\Decision;
 use DomainException;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\JsonResponse;
@@ -279,15 +280,12 @@ class DocumentController extends Controller
      */
     public function reviewDecide(Request $request, int $document): JsonResponse
     {
-        $validated = $request->validate([
-            'decision' => ['required', 'in:approved,rejected'],
-            'reason' => ['required_if:decision,rejected', 'nullable', 'string', 'max:1000'],
-        ]);
+        $validated = $request->validate(Decision::rules(reasonMax: 1000));
 
         $pending = $this->pending($document);
 
         try {
-            $decided = $validated['decision'] === 'approved'
+            $decided = $validated['decision'] === Decision::APPROVE
                 ? $this->documents->approve($pending, $request->user()->id)
                 : $this->documents->reject($pending, $request->user()->id, (string) $validated['reason']);
         } catch (DomainException $e) {

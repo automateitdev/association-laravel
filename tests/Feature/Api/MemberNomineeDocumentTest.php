@@ -391,14 +391,8 @@ class MemberNomineeDocumentTest extends TenantTestCase
 
         $id = $this->inTenant(fn () => Document::query()->latest('id')->value('id'));
 
-        /*
-         * `approved`, not `approve` - the document endpoint's vocabulary, and
-         * NOT the one the profile-update endpoint beside it uses, which takes
-         * `approve`. Two decision endpoints, two spellings of the same word;
-         * worth knowing before writing a third.
-         */
         $this->postJson("/api/v1/staff/document-reviews/{$id}/decide", [
-            'decision' => 'approved',
+            'decision' => 'approve',
         ], $this->headers($this->staffToken()))->assertOk();
 
         $this->inTenant(function () use ($id) {

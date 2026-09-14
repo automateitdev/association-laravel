@@ -13,6 +13,7 @@ use App\Models\Tenant\MemberPreference;
 use App\Models\Tenant\MemberProfileUpdate;
 use App\Models\Tenant\Nominee;
 use App\Services\DocumentService;
+use App\Support\Decision;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -76,14 +77,11 @@ class ProfileUpdateController extends Controller
             );
         }
 
-        $validated = $request->validate([
-            'decision' => ['required', 'in:approve,reject'],
-            'reason' => ['required_if:decision,reject', 'nullable', 'string', 'max:500'],
-        ], [
+        $validated = $request->validate(Decision::rules(reasonMax: 500), [
             'reason.required_if' => 'Say why it was refused - the member will ask.',
         ]);
 
-        $approving = $validated['decision'] === 'approve';
+        $approving = $validated['decision'] === Decision::APPROVE;
         $member = $record->member;
         $before = [];
 

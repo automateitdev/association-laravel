@@ -412,7 +412,7 @@ class MemberDocumentTest extends TenantTestCase
 
         $this->withHeaders($this->headers($staff))
             ->postJson("/api/v1/staff/document-reviews/{$queued[0]['id']}/decide", [
-                'decision' => 'approved',
+                'decision' => 'approve',
             ])
             ->assertOk()
             ->assertJsonPath('data.status', 'live');
@@ -446,12 +446,12 @@ class MemberDocumentTest extends TenantTestCase
         $pending = $this->inTenant(fn () => Document::where('status', 'pending')->firstOrFail());
 
         $this->withHeaders($this->headers($staff))
-            ->postJson("/api/v1/staff/document-reviews/{$pending->id}/decide", ['decision' => 'rejected'])
+            ->postJson("/api/v1/staff/document-reviews/{$pending->id}/decide", ['decision' => 'reject'])
             ->assertStatus(422);
 
         $this->withHeaders($this->headers($staff))
             ->postJson("/api/v1/staff/document-reviews/{$pending->id}/decide", [
-                'decision' => 'rejected',
+                'decision' => 'reject',
                 'reason' => 'The number is not readable. Please photograph it in better light.',
             ])
             ->assertOk();
@@ -483,7 +483,7 @@ class MemberDocumentTest extends TenantTestCase
         $pending = $this->inTenant(fn () => Document::where('status', 'pending')->firstOrFail());
 
         $decide = fn () => $this->withHeaders($this->headers($staff))
-            ->postJson("/api/v1/staff/document-reviews/{$pending->id}/decide", ['decision' => 'approved']);
+            ->postJson("/api/v1/staff/document-reviews/{$pending->id}/decide", ['decision' => 'approve']);
 
         $decide()->assertOk();
         $decide()->assertStatus(409)->assertJsonPath('error.code', 'ALREADY_DECIDED');
@@ -501,7 +501,7 @@ class MemberDocumentTest extends TenantTestCase
 
         $this->withHeaders($this->headers($staff))
             ->postJson("/api/v1/staff/document-reviews/{$pending->id}/decide", [
-                'decision' => 'rejected',
+                'decision' => 'reject',
                 'reason' => 'Blurred.',
             ])
             ->assertOk();

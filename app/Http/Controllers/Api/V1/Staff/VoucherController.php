@@ -9,6 +9,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Tenant\AuditLog;
 use App\Models\Tenant\Voucher;
 use App\Services\VoucherService;
+use App\Support\Decision;
 use DomainException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -109,18 +110,16 @@ class VoucherController extends Controller
     {
         $record = Voucher::with('lines')->findOrFail($voucher);
 
-        $validated = $request->validate([
-            'decision' => ['required', 'in:approve,reject'],
-        ]);
+        $validated = $request->validate(Decision::rules());
 
-        $result = $this->guard(fn () => $validated['decision'] === 'approve'
+        $result = $this->guard(fn () => $validated['decision'] === Decision::APPROVE
             ? $this->vouchers->approve($record, $request->user()->id)
             : $this->vouchers->reject($record, $request->user()->id));
 
         $this->audit(
             $request,
             $result,
-            $validated['decision'] === 'approve' ? 'voucher.approved' : 'voucher.rejected',
+            $validated['decision'] === Decision::APPROVE ? 'voucher.approved' : 'voucher.rejected',
             /*
              * Recorded when the same person wrote and approved it. Not
              * forbidden - a two-person association could post nothing if it

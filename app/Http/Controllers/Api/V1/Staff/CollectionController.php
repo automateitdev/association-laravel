@@ -168,9 +168,19 @@ class CollectionController extends Controller
             );
         }
 
+        /*
+         * Cast here too, and for the same reason one step down: the hash is
+         * what decides whether a retry is "the same body". Hashing `'25'` from
+         * a multipart retry against `25` from a JSON one would call an honest
+         * retry a reused key and refuse it.
+         */
         $requestHash = hash('sha256', json_encode([
-            'member' => $validated['member_id'],
-            'assigns' => collect($validated['fee_assign_ids'])->sort()->values()->all(),
+            'member' => (int) $validated['member_id'],
+            'assigns' => collect($validated['fee_assign_ids'])
+                ->map(fn ($id) => (int) $id)
+                ->sort()
+                ->values()
+                ->all(),
         ]));
 
         $existing = DB::table('idempotency_keys')->where('key', $key)->first();
@@ -188,14 +198,22 @@ class CollectionController extends Controller
             ]);
         }
 
+        /*
+         * CAST, BECAUSE `integer` VALIDATES WITHOUT CONVERTING. The app builds
+         * a FormData for this endpoint whether or not a slip is attached, and
+         * every value in a multipart body is a STRING. `'25'` passes the
+         * `integer` rule happily and then meets `create(int $memberId)`, which
+         * is a 500 - so every collection taken at the counter failed, and the
+         * tests did not see it because `postJson` sends real integers.
+         */
         try {
             $payment = $this->payments->create(
-                $validated['member_id'],
-                $validated['fee_assign_ids'],
+                (int) $validated['member_id'],
+                array_map('intval', $validated['fee_assign_ids']),
                 // Cash at a counter is a manual payment. Nothing here goes near
                 // the gateway.
                 PaymentInfo::TYPE_MANUAL,
-                $validated['ledger_id'],
+                (int) $validated['ledger_id'],
                 // WHO took the money. The member endpoint leaves this null, so
                 // a payment's origin is readable from the record itself rather
                 // than inferred from what it looks like.

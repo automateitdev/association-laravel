@@ -11,6 +11,8 @@ use App\Models\Tenant\PaymentInfo;
 use App\Models\User;
 use App\Services\FeeAssignService;
 use App\Services\TenantSeedService;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
 use Tests\Support\TenantFixtures;
@@ -421,6 +423,51 @@ class CollectionTest extends TenantTestCase
             foreach ($first['assigns'] as $id) {
                 $this->assertSame(FeeAssign::STATUS_UNPAID, FeeAssign::find($id)->status);
             }
+        });
+    }
+
+    /**
+     * THE WAY THE APP ACTUALLY POSTS THIS, which is not the way the rest of
+     * this file does.
+     *
+     * The collection screen builds a FormData whether or not a slip is
+     * attached, and every value in a multipart body is a STRING. `member_id`
+     * arrived as `'25'`, satisfied the `integer` rule - which validates
+     * without converting - and then met `PaymentService::create(int $memberId)`.
+     * A 500 on every collection taken at the counter.
+     *
+     * Nine tests covered this endpoint and none of them saw it, because
+     * `postJson` sends real integers. The bug lived in the gap between how the
+     * endpoint was tested and how it was called, so this test closes the gap
+     * rather than the symptom: `post` with an `UploadedFile` is a genuine
+     * multipart request, strings and all.
+     */
+    public function test_a_collection_posted_as_multipart_is_recorded(): void
+    {
+        Storage::fake('local');
+
+        $seed = $this->seedMemberWithDues();
+
+        $response = $this->withHeaders($this->headers($this->staffToken(), 'collect-multipart'))
+            ->post('/api/v1/staff/collections', [
+                // Strings, exactly as a browser or React Native FormData sends
+                // them. Casting these to int here would test nothing.
+                'member_id' => (string) $seed['member'],
+                'fee_assign_ids' => array_map('strval', $seed['assigns']),
+                'ledger_id' => (string) $seed['ledger'],
+                'documents' => [UploadedFile::fake()->image('slip.png')],
+            ])
+            ->assertCreated();
+
+        $response->assertJsonPath('data.status', PaymentInfo::STATUS_PENDING);
+        $response->assertJsonPath('data.total_amount', '2150.00');
+
+        // The slip rode along and was kept, not just accepted.
+        $this->inTenant(function () use ($seed) {
+            $payment = PaymentInfo::where('member_id', $seed['member'])->firstOrFail();
+
+            $this->assertCount(1, $payment->documents ?? []);
+            $this->assertSame('slip.png', $payment->documents[0]['original_name']);
         });
     }
 }

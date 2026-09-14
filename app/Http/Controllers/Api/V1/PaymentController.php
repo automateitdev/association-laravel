@@ -146,7 +146,11 @@ class PaymentController extends Controller
 
         $requestHash = hash('sha256', json_encode([
             'member' => $member->id,
-            'assigns' => collect($validated['fee_assign_ids'])->sort()->values()->all(),
+            'assigns' => collect($validated['fee_assign_ids'])
+                ->map(fn ($id) => (int) $id)
+                ->sort()
+                ->values()
+                ->all(),
             'type' => $type,
         ]));
 
@@ -166,11 +170,18 @@ class PaymentController extends Controller
         }
 
         try {
+            /*
+             * Cast for the same reason the staff collection endpoint does: this
+             * body arrives as multipart whenever a slip rides along, and every
+             * value in one is a string. `$member->id` is an int already because
+             * it comes off the model, and no member sends `ledger_id` today -
+             * but "no caller sends it yet" is not a type.
+             */
             $payment = $this->payments->create(
                 $member->id,
-                $validated['fee_assign_ids'],
+                array_map('intval', $validated['fee_assign_ids']),
                 $type,
-                $validated['ledger_id'] ?? null,
+                isset($validated['ledger_id']) ? (int) $validated['ledger_id'] : null,
             );
         } catch (\DomainException $e) {
             throw $this->translate($e);

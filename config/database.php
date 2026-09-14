@@ -64,6 +64,30 @@ return [
             ]) : [],
         ],
 
+        /*
+         * The legacy production database, READ ONLY by intent.
+         *
+         * A named connection rather than a second .env swap, because the
+         * migration reads it and the tenant database in the same process: one
+         * of them has to be addressed explicitly, and it should be the one
+         * nothing may write to. Nothing in the app opens this connection - only
+         * `legacy:migrate` names it - so a missing LEGACY_DB_DATABASE is a
+         * migration that refuses to start, not an app that boots wrong.
+         */
+        'legacy' => [
+            'driver' => 'mysql',
+            'host' => env('LEGACY_DB_HOST', '127.0.0.1'),
+            'port' => env('LEGACY_DB_PORT', '3306'),
+            'database' => env('LEGACY_DB_DATABASE'),
+            'username' => env('LEGACY_DB_USERNAME', 'root'),
+            'password' => env('LEGACY_DB_PASSWORD', ''),
+            'charset' => 'utf8mb4',
+            'collation' => 'utf8mb4_unicode_ci',
+            'prefix' => '',
+            'strict' => false,
+            'engine' => null,
+        ],
+
         'mariadb' => [
             'driver' => 'mariadb',
             'url' => env('DB_URL'),

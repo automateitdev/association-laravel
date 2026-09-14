@@ -9,6 +9,7 @@ use App\Models\Tenant\PaymentInfo;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 
 /**
  * The legacy association, loaded into a tenant database (FR-MIG-1).
@@ -96,6 +97,14 @@ class LegacyMigrator
     /** @var callable(string):void */
     private $progress;
 
+    /**
+     * Payments left behind for naming a member who does not exist, so their
+     * items can be left behind with them.
+     *
+     * @var array<int, true>
+     */
+    private array $skippedPayments = [];
+
     public function __construct(private readonly string $connection = 'legacy') {}
 
     /**
@@ -130,6 +139,7 @@ class LegacyMigrator
                 $this->accountGroups();
                 $this->ledgers();
                 $this->feeSetups();
+                $this->users();
                 $this->members();
                 $this->associatorInfos();
                 $this->nominees();
@@ -144,6 +154,21 @@ class LegacyMigrator
             });
 
             Schema::enableForeignKeyConstraints();
+
+            /*
+             * AND THEN CHECK, because re-enabling them proves nothing.
+             *
+             * MySQL does not revalidate existing rows when FOREIGN_KEY_CHECKS
+             * goes back on - it only starts enforcing new writes. The first
+             * version of this migrator skipped the legacy's staff users and
+             * loaded 4,177 payments whose `created_by` named a user that does
+             * not exist. Every constraint was "enabled" the whole time the
+             * database was wrong.
+             *
+             * So the switch is paired with a sweep. Disabling constraints is
+             * only safe if something asserts afterwards what they would have.
+             */
+            $this->verifyReferences();
 
             $this->report->after = $this->measureTenant();
         });
@@ -252,6 +277,46 @@ class LegacyMigrator
     }
 
     // ---- people -----------------------------------------------------------
+
+    /**
+     * The four staff accounts - without a usable password, and not optional.
+     *
+     * SKIPPING THEM WAS A BUG, not a decision. `members.created_by`,
+     * `payment_infos.created_by` and eight other columns are foreign keys to
+     * this table, and an association with no users is one nobody can
+     * administer: there is no account to log in with at all.
+     *
+     * MG-1's forced reset still holds - no legacy hash is copied. `password` is
+     * NOT NULL here, so each row gets a value that CANNOT be a bcrypt hash and
+     * therefore can never verify: the account exists, owns its history, and is
+     * unusable until somebody sets a password through the proper channel.
+     */
+    private function users(): void
+    {
+        $rows = $this->legacy->table('users')->orderBy('id')->get()->map(fn ($r) => [
+            'id' => $r->id,
+            'name' => $r->name,
+            'email' => $r->email,
+            'email_verified_at' => $r->email_verified_at,
+
+            // Not a hash of anything, and not a hash at all. `Hash::check()`
+            // against this is false for every input there is.
+            'password' => '!migrated-no-login-'.Str::random(40),
+
+            'remember_token' => null,
+            'created_at' => $r->created_at,
+            'updated_at' => $r->updated_at,
+        ])->all();
+
+        $this->load('users', $rows);
+
+        $this->report->notes[] = sprintf(
+            'users: %d staff accounts migrated with NO usable password (MG-1). Each must be '
+            .'given one through a password reset before anybody can sign in, and roles are not '
+            .'carried - they are assigned per association on the new platform.',
+            count($rows),
+        );
+    }
 
     /**
      * 315 members, without their passwords (MG-1).
@@ -533,7 +598,47 @@ class LegacyMigrator
         $unmapped = 0;
         $retries = $this->retriedInvoiceNumbers();
 
-        $this->stream('payment_infos', 'payment_infos', function ($r) use ($ledgerIds, $retries, &$unmapped) {
+        /*
+         * TWO IDENTITY SPACES IN ONE COLUMN. `created_by` holds a staff user id
+         * on 1,416 payments and a MEMBER id on 2,751 more - the legacy wrote
+         * whoever was logged in, and for an online payment that is the member.
+         * 9 further values are neither.
+         *
+         * The new schema means one thing by it: the staff member who took the
+         * money, null when the member paid for themselves. That is not a
+         * compromise here, it is the same distinction the legacy was reaching
+         * for - `PaymentController` already leaves it null so a payment's
+         * origin is readable from the record. So anything that is not a real
+         * user id becomes null, and the member is not lost: `member_id` names
+         * them, as it always did.
+         */
+        $userIds = $this->legacy->table('users')->pluck('id')->all();
+        $notAUser = 0;
+
+        $migratedMembers = $this->legacy->table('members')->pluck('id')->flip();
+        $skippedPayments = [];
+
+        $this->streamFiltered('payment_infos', 'payment_infos', function ($r) use ($migratedMembers, &$skippedPayments) {
+            /*
+             * 13 payments name members 275 and 277, who are not in the members
+             * table at all - deleted, with their payments left behind. Every
+             * one is `suspend`: refusals, no money. They cannot be loaded
+             * against a foreign key and should not be invented a member for.
+             */
+            if (! isset($migratedMembers[$r->member_id])) {
+                $skippedPayments[$r->id] = true;
+
+                return null;
+            }
+
+            return true;
+        }, function ($r) use ($ledgerIds, $retries, $userIds, &$unmapped, &$notAUser) {
+            $createdBy = in_array((int) $r->created_by, $userIds, true) ? (int) $r->created_by : null;
+
+            if ($createdBy === null && $r->created_by) {
+                $notAUser++;
+            }
+
             $ledger = is_numeric($r->ladger_id) ? (int) $r->ladger_id : null;
 
             if ($ledger !== null && ! in_array($ledger, $ledgerIds, true)) {
@@ -565,13 +670,33 @@ class LegacyMigrator
                 'payment_date' => $r->payment_date,
                 'reason' => $r->reasons,
                 'documents' => $this->documents($r->document_files),
-                'created_by' => $r->created_by ?: null,
+                'created_by' => $createdBy,
                 'decided_by' => null,
                 'decided_at' => null,
                 'created_at' => $r->created_at,
                 'updated_at' => $r->updated_at,
             ];
         });
+
+        if ($skippedPayments !== []) {
+            $this->report->notes[] = sprintf(
+                'payment_infos: %d payments named a member who no longer exists and were NOT '
+                .'migrated. All are suspended refusals, so no collected money is affected.',
+                count($skippedPayments),
+            );
+        }
+
+        if ($notAUser > 0) {
+            $this->report->notes[] = sprintf(
+                'payment_infos: %d rows had a created_by that is not a staff user - almost all '
+                .'are MEMBER ids, written by the legacy for member-initiated online payments. '
+                .'Set to null, which is what the new schema means by it; member_id still names '
+                .'the payer.',
+                $notAUser,
+            );
+        }
+
+        $this->skippedPayments = $skippedPayments;
 
         if ($unmapped > 0) {
             $this->report->notes[] = sprintf(
@@ -655,7 +780,10 @@ class LegacyMigrator
     private function paymentItems(): void
     {
         $status = $this->legacy->table('payment_infos')->pluck('status', 'id');
+        $assignIds = $this->legacy->table('fee_assigns')->pluck('id')->flip();
         $orphans = 0;
+        $noAssign = 0;
+        $withSkipped = 0;
 
         $this->streamFiltered(
             'payment_info_items',
@@ -675,9 +803,30 @@ class LegacyMigrator
              *
              * The migration plan's audit reports `orphaned items | 0`. It is 42.
              */
-            function ($r) use ($status, &$orphans) {
+            function ($r) use ($status, $assignIds, &$orphans, &$noAssign, &$withSkipped) {
+                // Two different populations, counted apart because only one of
+                // them is the legacy's own debris. Merging them made the report
+                // say 118 where the finding is 42.
                 if (! isset($status[$r->payment_info_id])) {
                     $orphans++;
+
+                    return null;
+                }
+
+                if (isset($this->skippedPayments[$r->payment_info_id])) {
+                    $withSkipped++;
+
+                    return null;
+                }
+
+                /*
+                 * 76 items name an assignment that no longer exists - 27
+                 * assignments, deleted with the items left pointing at them.
+                 * Every one belongs to a `suspend` payment, so the 74,004 they
+                 * name was never collected.
+                 */
+                if (! isset($assignIds[$r->fee_assign_id])) {
+                    $noAssign++;
 
                     return null;
                 }
@@ -713,6 +862,23 @@ class LegacyMigrator
                 'created_at' => $r->created_at,
                 'updated_at' => $r->updated_at,
             ]);
+
+        if ($withSkipped > 0) {
+            $this->report->notes[] = sprintf(
+                'payment_info_items: %d items belonged to the suspended payments skipped above, '
+                .'and were left behind with them.',
+                $withSkipped,
+            );
+        }
+
+        if ($noAssign > 0) {
+            $this->report->notes[] = sprintf(
+                'payment_info_items: %d items named a fee assignment that does not exist and '
+                .'were NOT migrated. All belong to suspended payments, so no collected money '
+                .'is affected.',
+                $noAssign,
+            );
+        }
 
         if ($orphans > 0) {
             $this->report->notes[] = sprintf(
@@ -962,6 +1128,85 @@ class LegacyMigrator
 
         ($this->progress)(sprintf('  %-22s %6d', $to, $count));
         $this->report->loaded[$to] = $count;
+    }
+
+    /**
+     * Every foreign key in the tenant, checked against the rows actually there.
+     *
+     * READ FROM THE SCHEMA, NOT FROM A LIST HERE. A hand-maintained list of
+     * relationships to check is a list that goes stale the first time somebody
+     * adds a column, and it would have been written by the same person who just
+     * forgot a table. `information_schema` already knows every constraint; this
+     * asks it, then asks the data whether each one holds.
+     *
+     * Throws rather than warns. It runs inside the transaction, so a dangling
+     * reference rolls the whole migration back and the tenant is left as it
+     * was - which is the only safe outcome: a database that looks migrated and
+     * has 4,177 payments attributed to a user who does not exist is harder to
+     * find and fix later than a migration that refused to finish.
+     */
+    private function verifyReferences(): void
+    {
+        $database = DB::connection()->getDatabaseName();
+
+        $constraints = DB::select('
+            select
+                kcu.table_name            as child_table,
+                kcu.column_name           as child_column,
+                kcu.referenced_table_name as parent_table,
+                kcu.referenced_column_name as parent_column
+            from information_schema.key_column_usage kcu
+            where kcu.table_schema = ?
+              and kcu.referenced_table_name is not null
+        ', [$database]);
+
+        $broken = [];
+
+        foreach ($constraints as $fk) {
+            /*
+             * The parent is ALIASED, and it has to be. `members
+             * .introduced_by_member_id` points at `members.id` - a
+             * self-reference - and an un-aliased subquery binds both sides to
+             * the INNER table, quietly asking which members introduced
+             * themselves. It reported 58 imaginary broken rows before this
+             * alias existed. The same trap waits on `ledger_traces.reverses_id`.
+             */
+            $count = DB::table($fk->child_table)
+                ->whereNotNull($fk->child_column)
+                ->whereNotExists(function ($q) use ($fk) {
+                    $q->selectRaw('1')
+                        ->from($fk->parent_table.' as parent_ref')
+                        ->whereColumn(
+                            'parent_ref.'.$fk->parent_column,
+                            $fk->child_table.'.'.$fk->child_column,
+                        );
+                })
+                ->count();
+
+            if ($count > 0) {
+                $broken[] = sprintf(
+                    '%s.%s -> %s.%s (%d rows)',
+                    $fk->child_table,
+                    $fk->child_column,
+                    $fk->parent_table,
+                    $fk->parent_column,
+                    $count,
+                );
+            }
+        }
+
+        if ($broken !== []) {
+            throw new \DomainException(
+                'Foreign keys were disabled for the load and these do not hold afterwards: '
+                .implode('; ', $broken)
+            );
+        }
+
+        $this->report->notes[] = sprintf(
+            'referential integrity: all %d foreign keys in the tenant verified against the '
+            .'loaded rows, after the constraints were re-enabled.',
+            count($constraints),
+        );
     }
 
     // ---- reconciliation (FR-MIG-2) ----------------------------------------

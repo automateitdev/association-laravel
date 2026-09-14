@@ -404,7 +404,13 @@ class FeeController extends Controller
             $validated['member_ids'],
             $setup,
             $validated['periods'],
-            $validated['fine_day'] ?? null,
+            /*
+             * Cast, because `integer` accepts `"5"` as readily as `5` and
+             * `bulkAssign` takes `?int`. No caller quotes it today and no
+             * file rides on this request - but the counter-collection 500
+             * was exactly this, one encoding change away from harmless.
+             */
+            isset($validated['fine_day']) ? (int) $validated['fine_day'] : null,
         );
 
         return response()->json(['data' => $summary], 201);

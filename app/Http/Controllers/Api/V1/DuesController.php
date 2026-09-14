@@ -39,10 +39,35 @@ class DuesController extends Controller
             ->orderBy('period')
             ->get();
 
+        /*
+         * TODAY, ASKED ONCE. A member's dues are read while the list is being
+         * built, and a date that moved between the first row and the last would
+         * put a boundary instalment on both sides of it.
+         */
+        $today = now()->startOfDay();
+
         $data = $assigns->map(fn (FeeAssign $assign) => [
             'fee_assign_id' => $assign->id,
             'fee_head' => $assign->feeSetup->fee_head,
             'period' => $assign->period,
+
+            /*
+             * WHETHER THIS IS OWED YET, and the reason this field exists.
+             *
+             * Associations assign instalments well ahead - COCSOL's run to
+             * 2027-12, fifteen months out - and `outstanding()` asks only about
+             * STATUS. So a member who owed one late instalment was shown
+             * "OUTSTANDING 18,100.00" and eighteen rows, of which seventeen
+             * were months that have not happened. That is not a dues figure,
+             * it is the rest of their membership added up.
+             *
+             * They are still listed and still payable: paying ahead is normal
+             * and the association assigned them deliberately. They are simply
+             * not DEBT, and the difference is the whole of what a member wants
+             * to know when they open this screen.
+             */
+            'due' => $assign->assign_date === null
+                || $assign->assign_date->startOfDay()->lessThanOrEqualTo($today),
 
             // Never merged. A single "amount" field would be the legacy bug in
             // a new coat.
@@ -56,21 +81,47 @@ class DuesController extends Controller
             'overdue_periods' => $this->overduePeriods($assign),
         ]);
 
-        $instalmentTotal = $assigns->reduce(
-            fn (string $carry, FeeAssign $a) => bcadd($carry, (string) $a->amount, 2),
+        $sum = fn ($rows, string $column) => $rows->reduce(
+            fn (string $carry, FeeAssign $a) => bcadd($carry, (string) $a->{$column}, 2),
             '0.00'
         );
-        $fineTotal = $assigns->reduce(
-            fn (string $carry, FeeAssign $a) => bcadd($carry, (string) $a->fine_amount, 2),
-            '0.00'
+
+        $owed = $assigns->filter(
+            fn (FeeAssign $a) => $a->assign_date === null
+                || $a->assign_date->startOfDay()->lessThanOrEqualTo($today)
         );
+        $ahead = $assigns->reject(fn (FeeAssign $a) => $owed->contains($a));
+
+        $instalmentTotal = $sum($assigns, 'amount');
+        $fineTotal = $sum($assigns, 'fine_amount');
+
+        $dueInstalments = $sum($owed, 'amount');
+        $dueFines = $sum($owed, 'fine_amount');
 
         return response()->json([
             'data' => $data,
             'meta' => [
+                /*
+                 * The totals of everything assigned, unchanged and still first,
+                 * because callers already read them and a screen that silently
+                 * started meaning something else is worse than one that gains a
+                 * field.
+                 */
                 'instalment_total' => $instalmentTotal,
                 'fine_total' => $fineTotal,
                 'grand_total' => bcadd($instalmentTotal, $fineTotal, 2),
+
+                // What is actually owed today. This is the figure to put in
+                // front of a member; the one above is their whole schedule.
+                'due_instalment_total' => $dueInstalments,
+                'due_fine_total' => $dueFines,
+                'due_grand_total' => bcadd($dueInstalments, $dueFines, 2),
+                'due_count' => $owed->count(),
+
+                // And what is assigned but not yet owed, so "pay ahead" can be
+                // offered as the deliberate choice it is.
+                'scheduled_total' => $sum($ahead, 'amount'),
+                'scheduled_count' => $ahead->count(),
             ],
         ]);
     }

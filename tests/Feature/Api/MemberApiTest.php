@@ -166,6 +166,61 @@ class MemberApiTest extends TenantTestCase
     // ---- dues ------------------------------------------------------------
 
     /**
+     * AN INSTALMENT NOBODY HAS ASKED FOR YET IS NOT A DEBT.
+     *
+     * Associations assign months ahead - COCSOL's run fifteen months past
+     * today - and `outstanding()` asks only about STATUS. So the dues endpoint
+     * counted the member's entire remaining schedule as owed, and the app
+     * printed it as one number: a member one instalment late was shown
+     * "OUTSTANDING 18,100.00" when they owed 3,100.
+     *
+     * The future rows are still returned and still payable - paying ahead is
+     * ordinary, and the association assigned them deliberately. They are simply
+     * reported apart, so the figure a member reads is the one they owe.
+     */
+    public function test_instalments_not_yet_due_are_reported_apart_from_what_is_owed(): void
+    {
+        [$member, $token] = $this->memberWithDues();
+
+        $future = $this->inTenant(function () use ($member) {
+            $feeSetup = FeeAssign::where('member_id', $member->id)->firstOrFail()->feeSetup;
+
+            // A year out, whenever this test happens to run.
+            $period = CarbonImmutable::now()->addYear();
+
+            app(FeeAssignService::class)->assign($member->id, $feeSetup, $period->format('Y-m'));
+
+            return FeeAssign::where('member_id', $member->id)
+                ->orderByDesc('period')
+                ->firstOrFail();
+        });
+
+        $meta = $this->withHeaders($this->headers($token))
+            ->getJson('/api/v1/fees/dues')
+            ->assertOk()
+            ->json('meta');
+
+        // Both rows are outstanding, so the schedule totals count both.
+        $this->assertSame('2000.00', $meta['instalment_total']);
+
+        // Only one of them is OWED.
+        $this->assertSame(1, $meta['due_count']);
+        $this->assertSame('1000.00', $meta['due_instalment_total']);
+
+        // And the other is named as scheduled rather than silently dropped.
+        $this->assertSame(1, $meta['scheduled_count']);
+        $this->assertSame('1000.00', $meta['scheduled_total']);
+
+        // The row itself says which it is, so the app never has to work it out
+        // from a period string and a clock of its own.
+        $rows = collect($this->withHeaders($this->headers($token))
+            ->getJson('/api/v1/fees/dues')
+            ->json('data'))->keyBy('fee_assign_id');
+
+        $this->assertFalse($rows[$future->id]['due'], 'a future instalment was reported as due');
+    }
+
+    /**
      * The response rule that encodes the whole fix: instalment and fine are
      * always separate fields, and the total is computed server-side.
      */

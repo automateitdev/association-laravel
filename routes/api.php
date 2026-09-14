@@ -195,6 +195,15 @@ Route::prefix('v1')->group(function () {
         Route::get('/fees/dues', [DuesController::class, 'index'])
             ->middleware('ability:member.dues.view');
 
+        /*
+         * The member's own statement - the report the office has had since the
+         * legacy and the member never has. Same permission as dues: it is the
+         * same facts about the same person, arranged to be read rather than
+         * acted on.
+         */
+        Route::get('/fees/statement', [DuesController::class, 'statement'])
+            ->middleware('ability:member.dues.view');
+
         Route::get('/fees/summary', [DuesController::class, 'summary'])
             ->middleware('ability:member.dues.view');
 

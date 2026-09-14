@@ -9,6 +9,7 @@ use App\Models\Tenant\FineDate;
 use App\Models\Tenant\Member;
 use App\Services\FeeAssignService;
 use App\Services\FineService;
+use App\Services\PaymentService;
 use App\Services\TenantSeedService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\UploadedFile;
@@ -164,6 +165,78 @@ class MemberApiTest extends TenantTestCase
     }
 
     // ---- dues ------------------------------------------------------------
+
+    // ---- the member's own statement ---------------------------------------
+
+    /**
+     * ONE ROW PER PERIOD CHARGED, whatever settled it.
+     *
+     * The unit is the ASSIGNMENT and not the payment, because one payment
+     * commonly settles several months - the first real member I looked at had
+     * 2026-05 and 2026-06 both cleared by INV1260620234011 - and a row per
+     * payment cannot show the month that is MISSING, which is the question a
+     * statement exists to answer.
+     */
+    public function test_the_statement_has_a_row_for_every_period_charged(): void
+    {
+        [$member, $token] = $this->memberWithDues();
+
+        $response = $this->withHeaders($this->headers($token))
+            ->getJson('/api/v1/fees/statement')
+            ->assertOk();
+
+        $response->assertJsonPath('meta.periods', 1);
+        $response->assertJsonPath('meta.paid_periods', 0);
+
+        // Charged, and apart - the rule this whole platform turns on.
+        $response->assertJsonPath('data.0.period', '2026-01');
+        $response->assertJsonPath('data.0.instalment_amount', '1000.00');
+        $response->assertJsonPath('data.0.status', 'Unpaid');
+
+        // Nothing has settled it, so there is no date and no invoice to show.
+        $response->assertJsonPath('data.0.paid_on', null);
+        $response->assertJsonPath('data.0.invoice_no', null);
+    }
+
+    /**
+     * A PAYMENT NOBODY HAS APPROVED HAS NOT PAID ANYTHING.
+     *
+     * The tempting shape is to join the statement to whatever payment names the
+     * assignment and print its date. That would tell a member their instalment
+     * was paid on the day they FILED it - before any officer had looked - and
+     * "Paid on" is exactly the column somebody would quote back to the office.
+     *
+     * The row stays unsettled and says `Requested` instead, which is true and
+     * is also the word the dues list already uses for it.
+     */
+    public function test_a_pending_payment_does_not_put_a_date_in_the_paid_column(): void
+    {
+        [$member, $token, $assign] = $this->memberWithDues();
+
+        /*
+         * Made through the service rather than the endpoint. Member-filed
+         * offline payment is off unless the association switches it on
+         * (FR-PAY-16), and this test is about what the STATEMENT says about a
+         * pending payment - not about which routes are open.
+         */
+        $this->inTenant(function () use ($member, $assign) {
+            app(PaymentService::class)->create($member->id, [$assign->id]);
+        });
+
+        $row = $this->withHeaders($this->headers($token))
+            ->getJson('/api/v1/fees/statement')
+            ->assertOk()
+            ->json('data.0');
+
+        $this->assertSame('Requested', $row['status']);
+        $this->assertNull($row['paid_on'], 'an unapproved payment dated the Paid on column');
+        $this->assertNull($row['invoice_no'], 'an unapproved payment named an invoice as settled');
+
+        // And it is still not counted as a paid period.
+        $this->withHeaders($this->headers($token))
+            ->getJson('/api/v1/fees/statement')
+            ->assertJsonPath('meta.paid_periods', 0);
+    }
 
     /**
      * AN INSTALMENT NOBODY HAS ASKED FOR YET IS NOT A DEBT.

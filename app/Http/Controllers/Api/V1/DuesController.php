@@ -338,6 +338,101 @@ class DuesController extends Controller
      * This is defect D-5's fix at the entry point: the legacy controller takes
      * member_id from the request body and validates only that it exists.
      */
+    /**
+     * The member's own account, period by period (FR-REP-5, for one person).
+     *
+     * WHAT THE PORTAL HAD NO ANSWER TO. A member could see what they owe now
+     * and a list of receipts, and nothing that put the two together. "Did I pay
+     * March?" meant scrolling a stack of invoice cards and reading dates; "what
+     * did I pay in fines last year" had no answer at all short of arithmetic on
+     * a phone. The office has had a member-wise report since the legacy; the
+     * member has never had their own.
+     *
+     * ONE ROW PER ASSIGNMENT, which is the unit the association charges in -
+     * not per payment, because one payment settles several months and a row per
+     * payment cannot show the month that is missing. The missing months are the
+     * point of a statement.
+     *
+     * EVERY FIGURE COMPUTED HERE. The app renders this table and adds nothing
+     * up, including the column totals: a statement is the one screen a member
+     * might take to the office to argue with, so the numbers on it have to be
+     * the association's own.
+     */
+    public function statement(Request $request): JsonResponse
+    {
+        $member = $this->member($request);
+
+        $assigns = FeeAssign::query()
+            ->with([
+                'feeSetup:id,fee_head',
+
+                /*
+                 * The settling item, and only a completed one. An assignment
+                 * with a pending payment against it is NOT paid, and showing
+                 * that payment's date in a "Paid on" column would tell a member
+                 * a thing the association has not yet agreed to.
+                 */
+                'items' => fn ($q) => $q
+                    ->where('payment_status', PaymentInfo::STATUS_COMPLETED)
+                    ->with('payment:id,invoice_no,payment_date'),
+            ])
+            ->where('member_id', $member->id)
+            ->orderByDesc('period')
+            ->get();
+
+        $today = now()->startOfDay();
+
+        $rows = $assigns->map(function (FeeAssign $assign) use ($today) {
+            $item = $assign->items->first();
+
+            return [
+                'fee_assign_id' => $assign->id,
+                'period' => $assign->period,
+                'fee_head' => $assign->feeSetup->fee_head,
+
+                // Charged, always apart.
+                'instalment_amount' => (string) $assign->amount,
+                'fine_amount' => (string) $assign->fine_amount,
+                'total_amount' => $assign->totalDue(),
+
+                'status' => $assign->status,
+
+                // Only when the association has actually accepted the money.
+                // `toDateString`, as every other endpoint sends it. A raw cast
+                // here would hand the app an ISO timestamp for a column that is
+                // a date everywhere else it appears.
+                'paid_on' => $item?->payment?->payment_date?->toDateString(),
+                'invoice_no' => $item?->payment?->invoice_no,
+                'payment_id' => $item?->payment?->id,
+
+                'due' => $assign->assign_date === null
+                    || $assign->assign_date->startOfDay()->lessThanOrEqualTo($today),
+            ];
+        });
+
+        $sum = fn ($rows, string $column) => $rows->reduce(
+            fn (string $carry, FeeAssign $a) => bcadd($carry, (string) $a->{$column}, 2),
+            '0.00'
+        );
+
+        $paid = $assigns->filter(fn (FeeAssign $a) => $a->status === FeeAssign::STATUS_PAID);
+
+        return response()->json([
+            'data' => $rows,
+            'meta' => [
+                'periods' => $assigns->count(),
+                'paid_periods' => $paid->count(),
+
+                // Column totals for the table foot, and the same separation
+                // everywhere else keeps.
+                'instalment_total' => $sum($assigns, 'amount'),
+                'fine_total' => $sum($assigns, 'fine_amount'),
+                'paid_instalment_total' => $sum($paid, 'amount'),
+                'paid_fine_total' => $sum($paid, 'fine_amount'),
+            ],
+        ]);
+    }
+
     private function member(Request $request): Member
     {
         $account = $request->user();

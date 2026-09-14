@@ -6,8 +6,10 @@ namespace App\Services\Migration;
 
 use App\Models\Tenant;
 use App\Models\Tenant\PaymentInfo;
+use App\Models\User;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
@@ -299,9 +301,17 @@ class LegacyMigrator
             'email' => $r->email,
             'email_verified_at' => $r->email_verified_at,
 
-            // Not a hash of anything, and not a hash at all. `Hash::check()`
-            // against this is false for every input there is.
-            'password' => '!migrated-no-login-'.Str::random(40),
+            /*
+             * THE LEGACY HASH, CARRIED. MG-1 originally said forced reset and
+             * the association decided otherwise on 2026-09-14, knowingly: see
+             * `usableHash()` for what that means and what was weighed.
+             *
+             * Nothing is re-hashed on the way through. A bcrypt hash is already
+             * the safe form of a password, and `Hash::check()` verifies `$2y$`
+             * and `$2a$` alike; hashing it again would produce something that
+             * matches nothing.
+             */
+            'password' => $this->usableHash($r->password),
 
             'remember_token' => null,
             'created_at' => $r->created_at,
@@ -310,12 +320,114 @@ class LegacyMigrator
 
         $this->load('users', $rows);
 
+        $assigned = $this->userRoles();
+
         $this->report->notes[] = sprintf(
-            'users: %d staff accounts migrated with NO usable password (MG-1). Each must be '
-            .'given one through a password reset before anybody can sign in, and roles are not '
-            .'carried - they are assigned per association on the new platform.',
+            'users: %d staff accounts and %d role assignments carried, WITH their existing '
+            .'bcrypt passwords - the association chose continuity over the forced reset MG-1 '
+            .'recommended, on 2026-09-14, having been told what it costs. '
+            .'`tenant:staff-password` changes any of them.',
             count($rows),
+            $assigned,
         );
+    }
+
+    /**
+     * A legacy hash if it really is one, and an unusable hash if it is not.
+     *
+     * THE DECISION THIS IMPLEMENTS. MG-1 recommended a forced reset for
+     * everybody; the association chose on 2026-09-14 to carry every hash
+     * instead, staff included, and was told what that weighs on each side:
+     *
+     *   FOR - the legacy stores proper bcrypt (`$2y$10$` for 262 accounts,
+     *   `$2a$12$` for 55), which `Hash::check()` verifies natively. Nobody has
+     *   to do anything at cutover. That matters more than it sounds: this
+     *   platform has NO password reset flow, and SMS has never been used by
+     *   this association - 0 rows in `sms_histories` - so a forced reset today
+     *   locks out 315 people with no channel to let them back in.
+     *
+     *   AGAINST - the source database is not above suspicion. `settings
+     *   .password` in it holds `12345` in plain text, and D-10 records live
+     *   gateway credentials committed to that repository's history. bcrypt
+     *   protects a strong password well and a weak one for about as long as it
+     *   takes to try the obvious ones. Four of these accounts are admin or
+     *   superadmin.
+     *
+     * The guard below is not second-guessing that decision; it is the lesson
+     * from the bug this same column already caused. `BcryptHasher::check()`
+     * THROWS on a value that is not a bcrypt hash rather than returning false,
+     * so one malformed row would turn a wrong-password attempt into a 500 for
+     * that account. Anything that is not `$2y$` or `$2a$` gets a well-formed
+     * hash of 64 random characters: that account cannot be signed into, which
+     * is the honest outcome for a password nobody can verify, and the screen
+     * says so properly.
+     */
+    private function usableHash(mixed $hash): string
+    {
+        $value = (string) ($hash ?? '');
+
+        if (str_starts_with($value, '$2y$') || str_starts_with($value, '$2a$')) {
+            return $value;
+        }
+
+        $this->report->notes[] = 'users: an account had a password that is not a bcrypt hash; '
+            .'it was replaced with an unusable one and must be set with `tenant:staff-password`.';
+
+        return Hash::make(Str::random(64));
+    }
+
+    /**
+     * `user_type` becomes a role, because the two vocabularies already agree.
+     *
+     * NOT CARRYING THESE WAS A SECOND LOCKOUT waiting behind the first. The
+     * accounts migrate without a usable password, which is deliberate; they
+     * were also migrating without any role, which is not. Setting a password
+     * and then finding the account can do nothing is a worse experience than
+     * being locked out, because it looks like the new system is broken.
+     *
+     * The legacy's `user_type` holds `admin` and `superadmin`; the tenant's
+     * roles are `superadmin`, `admin` and `operator`. The first two match
+     * exactly. A `user_type` with no matching role is skipped and counted
+     * rather than guessed into the nearest one - inventing authority is the
+     * one mistake here that cannot be walked back quietly.
+     */
+    private function userRoles(): int
+    {
+        $roles = DB::table('roles')->pluck('id', 'name');
+        $rows = [];
+        $unmapped = 0;
+
+        foreach ($this->legacy->table('users')->orderBy('id')->get(['id', 'user_type']) as $user) {
+            $roleId = $roles[trim((string) $user->user_type)] ?? null;
+
+            if ($roleId === null) {
+                $unmapped++;
+
+                continue;
+            }
+
+            $rows[] = [
+                'role_id' => $roleId,
+                'model_type' => User::class,
+                'model_id' => $user->id,
+            ];
+        }
+
+        DB::table('model_has_roles')->delete();
+
+        if ($rows !== []) {
+            DB::table('model_has_roles')->insert($rows);
+        }
+
+        if ($unmapped > 0) {
+            $this->report->notes[] = sprintf(
+                'users: %d accounts had a user_type with no matching role and were left with '
+                .'none. Give them one with `permission:assign-role` rather than guessing here.',
+                $unmapped,
+            );
+        }
+
+        return count($rows);
     }
 
     /**
@@ -354,8 +466,18 @@ class LegacyMigrator
                 'email' => $r->email,
                 'email_verified_at' => $r->email_verified_at,
 
-                // MG-1: forced reset. Nothing here is a hash of anything.
-                'password' => null,
+                // Carried, as the association decided. Two members have none
+                // at all in the legacy and keep none here - they have never
+                // signed in, and inventing one for them would be worse.
+                'password' => $r->password ?: null,
+
+                /*
+                 * NOT carried, and not part of that decision. A remember-me
+                 * token authenticates a BROWSER that was signed in to the old
+                 * application at the old address. It has no meaning here, and a
+                 * live one is a credential sitting in a cookie on a machine
+                 * nobody is tracking.
+                 */
                 'remember_token' => null,
 
                 'nid' => $r->nid,

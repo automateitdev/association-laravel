@@ -259,23 +259,74 @@ class LegacyMigrator
         $this->load('ledgers', $rows);
     }
 
+    /**
+     * THE LEGACY SCHEMA MOVES UNDER THIS. A newer dump dropped
+     * `fee_setups.fine_ledger_id`, and the migration stopped dead on an
+     * undefined property - which is the right failure, but only useful if the
+     * next column to vanish fails the same way rather than silently loading a
+     * null.
+     *
+     * So the column is read defensively and, when it is absent, RECOVERED BY
+     * NAME. The relationship still exists in the data: a ledger called "Fine
+     * Ledger" is sitting there, it is the one the dropped column pointed at
+     * (id 6, verified against the previous dump), and fines have to post
+     * somewhere - a fee head with no fine ledger produces fines that cannot be
+     * approved, which the collection screen already has a note about.
+     *
+     * Where the name is ambiguous or absent it stays NULL and is reported,
+     * rather than picking a ledger for the association to discover later.
+     */
     private function feeSetups(): void
     {
-        $rows = $this->legacy->table('fee_setups')->get()->map(fn ($r) => [
-            'id' => $r->id,
-            'fee_head' => $r->fee_head,
-            'monthly' => (int) $r->monthly,
-            'amount' => $this->money($r->amount),
-            'fine_rate' => $this->money($r->fine),
-            'is_share' => (int) $r->is_share,
-            'ledger_id' => $r->ledger_id,
-            'fine_ledger_id' => $r->fine_ledger_id,
-            'is_active' => 1,
-            'created_at' => $r->created_at,
-            'updated_at' => $r->updated_at,
-        ])->all();
+        $fineLedgerId = $this->fineLedgerId();
+        $recovered = 0;
+
+        $rows = $this->legacy->table('fee_setups')->get()->map(function ($r) use ($fineLedgerId, &$recovered) {
+            $fine = property_exists($r, 'fine_ledger_id') ? $r->fine_ledger_id : null;
+
+            if ($fine === null && $fineLedgerId !== null) {
+                $fine = $fineLedgerId;
+                $recovered++;
+            }
+
+            return [
+                'id' => $r->id,
+                'fee_head' => $r->fee_head,
+                'monthly' => (int) $r->monthly,
+                'amount' => $this->money($r->amount),
+                'fine_rate' => $this->money($r->fine),
+                'is_share' => (int) $r->is_share,
+                'ledger_id' => $r->ledger_id,
+                'fine_ledger_id' => $fine,
+                'is_active' => 1,
+                'created_at' => $r->created_at,
+                'updated_at' => $r->updated_at,
+            ];
+        })->all();
 
         $this->load('fee_setups', $rows);
+
+        if ($recovered > 0) {
+            $this->report->notes[] = sprintf(
+                'fee_setups: this dump has no `fine_ledger_id` column; %d fee heads were pointed '
+                .'at ledger %d, the one named for fines. Confirm it with the association - the '
+                .'source no longer states this relationship.',
+                $recovered,
+                $fineLedgerId,
+            );
+        }
+    }
+
+    /**
+     * The ledger fines post to, found by name and only when unambiguous.
+     */
+    private function fineLedgerId(): ?int
+    {
+        $candidates = $this->legacy->table('ledgers')
+            ->whereRaw('lower(ledger_name) like ?', ['%fine%'])
+            ->pluck('id');
+
+        return $candidates->count() === 1 ? (int) $candidates->first() : null;
     }
 
     // ---- people -----------------------------------------------------------
@@ -736,11 +787,23 @@ class LegacyMigrator
          */
         $userIds = $this->legacy->table('users')->pluck('id')->all();
         $notAUser = 0;
+        $doubleRecorded = $this->doubleRecordedPayments();
+        $refolded = $this->refoldedPayables();
 
         $migratedMembers = $this->legacy->table('members')->pluck('id')->flip();
         $skippedPayments = [];
 
-        $this->streamFiltered('payment_infos', 'payment_infos', function ($r) use ($migratedMembers, &$skippedPayments) {
+        $this->streamFiltered('payment_infos', 'payment_infos', function ($r) use ($migratedMembers, $doubleRecorded, &$skippedPayments) {
+            /*
+             * One payment written down twice. See `doubleRecordedPayments` -
+             * the later row is a duplicate RECORD, not a second collection.
+             */
+            if (isset($doubleRecorded[$r->id])) {
+                $skippedPayments[$r->id] = true;
+
+                return null;
+            }
+
             /*
              * 13 payments name members 275 and 277, who are not in the members
              * table at all - deleted, with their payments left behind. Every
@@ -754,7 +817,7 @@ class LegacyMigrator
             }
 
             return true;
-        }, function ($r) use ($ledgerIds, $retries, $userIds, &$unmapped, &$notAUser) {
+        }, function ($r) use ($ledgerIds, $retries, $userIds, $refolded, &$unmapped, &$notAUser) {
             $createdBy = in_array((int) $r->created_by, $userIds, true) ? (int) $r->created_by : null;
 
             if ($createdBy === null && $r->created_by) {
@@ -779,7 +842,8 @@ class LegacyMigrator
                 'invoice_no' => $retries[$r->id] ?? trim((string) $r->invoice_no),
                 'member_id' => $r->member_id,
                 'ledger_id' => $ledger,
-                'payable_amount' => $this->money($r->payable_amount),
+                // M-1, and no longer a no-op. See `refoldedPayables`.
+                'payable_amount' => $this->money($refolded[$r->id] ?? $r->payable_amount),
                 'fine_amount' => $this->money($r->fine_amount),
                 'total_amount' => $this->money($r->total_amount),
                 'gateway_amount' => $r->spg_pay_amount === null
@@ -799,6 +863,33 @@ class LegacyMigrator
                 'updated_at' => $r->updated_at,
             ];
         });
+
+        if ($refolded !== []) {
+            $this->report->notes[] = sprintf(
+                'payment_infos: M-1 APPLIED to %d completed %s. Their `payable_amount` included '
+                .'the fine - the savings figure a member is shown, inflated by a penalty - and is '
+                .'recomputed from the payment items, which restores total = payable + fine. '
+                .'07-migration-plan.md says D-1 does not manifest in this data; it did not in the '
+                .'2026-09-03 dump and it DOES here. The grand total collected does not move: this '
+                .'reallocates between two columns. THIS NEEDS THE ASSOCIATION (FR-MIG-3): %s',
+                count($refolded),
+                count($refolded) === 1 ? 'payment' : 'payments',
+                implode('; ', array_keys($refolded)),
+            );
+        }
+
+        if ($doubleRecorded !== []) {
+            $this->report->notes[] = sprintf(
+                'payment_infos: %d completed %s a duplicate record of a payment already '
+                .'migrated - same invoice number, same gateway transaction id, settling the same '
+                .'assignment. One collection written down twice, and the legacy ledger posted it '
+                .'twice with it. Not migrated, so the collected total falls by what it names. '
+                .'THIS NEEDS THE ASSOCIATION (FR-MIG-3): %s',
+                count($doubleRecorded),
+                count($doubleRecorded) === 1 ? 'payment is' : 'payments are',
+                implode('; ', $doubleRecorded),
+            );
+        }
 
         if ($skippedPayments !== []) {
             $this->report->notes[] = sprintf(
@@ -827,6 +918,129 @@ class LegacyMigrator
                 $unmapped,
             );
         }
+    }
+
+    /**
+     * M-1: `payable_amount` with a fine folded into it (D-1).
+     *
+     * THE DEFECT THE PLAN SAID HAD NEVER FIRED. 07-migration-plan.md argues the
+     * case at length - 380 completed online payments carrying a fine, and not
+     * one with `payable_amount = total_amount` - and concludes M-1 is a no-op
+     * against this data. That was true of the dump it was measured on. It is
+     * not true of this one: two payments arrive with payable 3,100, fine 100
+     * and total 3,100, whose items add to 3,000 instalments and 100 in fines.
+     *
+     * `payable_amount` is what a member is shown as SAVED. A fine is a penalty
+     * and is not savings - that is FR-MON-1 and the reason this platform
+     * exists - so a fine sitting inside it overstates what the association owes
+     * that member back.
+     *
+     * RECOMPUTED FROM THE ITEMS, which are the record of what was actually
+     * charged, and only where doing so makes `total = payable + fine` hold.
+     * That last condition is what keeps this narrow: if the recomputation does
+     * not reconcile, the row is left exactly as it is and the audit reports it,
+     * because a figure this file cannot explain is not one it should rewrite.
+     *
+     * NO MONEY IS CREATED OR DESTROYED. The grand total collected is unchanged;
+     * this moves value between the instalment and fine columns, which is what
+     * M-1 always said it would do.
+     *
+     * @return array<int, string> payment id => corrected payable
+     */
+    private function refoldedPayables(): array
+    {
+        $rows = $this->legacy->table('payment_infos as p')
+            ->join('payment_info_items as i', 'i.payment_info_id', '=', 'p.id')
+            ->where('p.status', 'completed')
+            ->groupBy('p.id', 'p.payable_amount', 'p.fine_amount', 'p.total_amount')
+            ->havingRaw('abs(p.total_amount - (p.payable_amount + p.fine_amount)) > 0.004')
+            ->get([
+                'p.id',
+                'p.payable_amount',
+                'p.fine_amount',
+                'p.total_amount',
+                DB::raw('sum(i.amount) as item_total'),
+            ]);
+
+        $out = [];
+
+        foreach ($rows as $row) {
+            $corrected = $this->money($row->item_total);
+
+            // Only when it actually reconciles. Otherwise leave it alone.
+            $reconciles = abs(
+                (float) $row->total_amount - ((float) $corrected + (float) $row->fine_amount)
+            ) < 0.005;
+
+            if ($reconciles) {
+                $out[$row->id] = $corrected;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * ONE PAYMENT WRITTEN DOWN TWICE, which is not the same as two payments.
+     *
+     * A newer dump brought a shape the first one did not have: `INV217260902213742`
+     * on TWO completed rows, member 217, 1,000 each, a second apart. It looks
+     * like a double collection and is not - both name the SAME gateway
+     * transaction id, the same gateway amount, and settle the SAME fee
+     * assignment. The member paid once; the legacy recorded it twice and its
+     * ledger posted 2,000 against a 1,000 payment.
+     *
+     * The new schema refuses this three separate ways - `invoice_no` is unique,
+     * and `settled_fee_assign_id` is unique so one assignment cannot be settled
+     * twice - which is how it surfaced rather than being carried in.
+     *
+     * DELIBERATELY NARROW. Only rows that share an invoice number AND a
+     * non-empty gateway reference AND are both completed. That combination is
+     * proof of a single transaction at the bank; anything looser would start
+     * deciding that two genuine payments are one, which is the opposite and far
+     * worse mistake.
+     *
+     * The earliest row is kept and the rest are left behind, so the collected
+     * total FALLS by what the duplicates name. That is a member-visible figure
+     * moving, so it is reported rather than quietly corrected, and the
+     * association has to agree with it before cutover.
+     *
+     * @return array<int, string> payment id => a description for the report
+     */
+    private function doubleRecordedPayments(): array
+    {
+        $groups = $this->legacy->table('payment_infos')
+            ->select('invoice_no', 'transaction_id')
+            ->where('status', 'completed')
+            ->whereNotNull('transaction_id')
+            ->where('transaction_id', '!=', '')
+            ->groupBy('invoice_no', 'transaction_id')
+            ->havingRaw('count(*) > 1')
+            ->get();
+
+        $out = [];
+
+        foreach ($groups as $group) {
+            $rows = $this->legacy->table('payment_infos')
+                ->where('status', 'completed')
+                ->where('invoice_no', $group->invoice_no)
+                ->where('transaction_id', $group->transaction_id)
+                ->orderBy('id')
+                ->get(['id', 'member_id', 'total_amount']);
+
+            // The first is the payment. Everything after it is the same money.
+            foreach ($rows->skip(1) as $row) {
+                $out[$row->id] = sprintf(
+                    'payment %d (%s, member %d, %s)',
+                    $row->id,
+                    $group->invoice_no,
+                    $row->member_id,
+                    $row->total_amount,
+                );
+            }
+        }
+
+        return $out;
     }
 
     /**
@@ -1105,11 +1319,26 @@ class LegacyMigrator
             );
         }
 
-        $this->report->notes[] = 'ledger_traces: 2 completed payments carried a trailing TAB in '
-            .'their invoice number, so the legacy could not match their traces by string and they '
-            .'read as unposted. They have 2 and 16 traces, 1,000 and 6,200 in debits. Trimming '
-            .'reunites them: 707 apparently-unposted payments become 705, and that difference is '
-            .'repair, not loss.';
+        /*
+         * COUNTED, NOT REMEMBERED. This note used to state "2 payments... 707
+         * become 705" - true of the dump it was written against and quietly
+         * wrong for the next one. A reconciliation report that recites numbers
+         * from a previous run is worse than one that omits them.
+         */
+        $whitespace = $this->legacy->table('payment_infos')
+            ->whereRaw('invoice_no <> trim(both char(9) from trim(invoice_no))')
+            ->count();
+
+        if ($whitespace > 0) {
+            $this->report->notes[] = sprintf(
+                'payment_infos: %d invoice %s leading or trailing whitespace - a TAB, which '
+                .'MySQL TRIM() does not strip - so the legacy could not match their ledger traces '
+                .'by string and they read as unposted. Trimming reunites them, which is repair '
+                .'rather than loss.',
+                $whitespace,
+                $whitespace === 1 ? 'number carries' : 'numbers carry',
+            );
+        }
     }
 
     /**
